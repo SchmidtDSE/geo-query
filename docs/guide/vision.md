@@ -1,6 +1,6 @@
 # The bigger picture
 
-The MCP Data Server is one part of a larger open-source effort to make
+geo-query is one part of a larger open-source effort to make
 **terabyte-scale science data reachable by the AI tools researchers already use.**
 
 ## The problem

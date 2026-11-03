@@ -1,4 +1,4 @@
-# MCP Data Server
+# geo-query
 
 **[Documentation](https://schmidtdse.github.io/geo-query/)** · **[The bigger picture](https://schmidtdse.github.io/geo-query/guide/vision)**
 

@@ -1,6 +1,6 @@
-# Contributing to MCP Data Server
+# Contributing to geo-query
 
-Thanks for your interest in improving the MCP Data Server! This project is an
+Thanks for your interest in improving geo-query! This project is an
 open [Model Context Protocol](https://modelcontextprotocol.io/) server that
 connects AI agents to cloud-native data. Contributions of all kinds are welcome
 — code, datasets, query-guidance improvements, and documentation.

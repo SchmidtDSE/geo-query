@@ -1,6 +1,6 @@
-# Test Suite for MCP Data Server
+# Test suite for geo-query
 
-This directory contains the test suite for the MCP Data Server project.
+This directory contains the test suite for geo-query.
 
 ## Structure
 
