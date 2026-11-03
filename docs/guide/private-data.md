@@ -19,7 +19,7 @@ The token is forwarded as `Authorization: Bearer <token>` when fetching catalog 
 
 ::: warning Catalog scope is not a tool argument
 `get_stac_details`, `get_collection` and `browse_stac_catalog` took `catalog_url` and
-`catalog_token` until [#420](https://github.com/boettiger-lab/mcp-data-server/issues/420).
+`catalog_token` until [#420](https://github.com/SchmidtDSE/geo-query/issues/420).
 They do not any more: an argument the model supplies is an argument the model can change,
 which let an agent reach datasets outside the ones its app configures. A client that still
 sends them is not broken — unknown arguments are dropped during validation — but the value
@@ -27,7 +27,7 @@ is ignored and lookups resolve against the deployment's own catalog.
 
 A client that already holds the STAC JSON can still skip the fetch entirely by passing it
 inline as `collection` (or `catalog` for `browse_stac_catalog`). That remains the primary
-contract; see [catalog sourcing](https://github.com/boettiger-lab/mcp-data-server/blob/main/docs/architecture/catalog-sourcing.md).
+contract; see [catalog sourcing](https://github.com/SchmidtDSE/geo-query/blob/main/docs/architecture/catalog-sourcing.md).
 :::
 
 Running a private app and want the model to see *only* the collections you configure? Set

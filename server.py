@@ -14,7 +14,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import JSONResponse
 from stac import STAC_DATASETS, STAC_LOAD_ERRORS, STAC_CATALOG_URL, list_datasets as _stac_list, get_dataset as _stac_get, get_collection as _stac_get_collection, public_catalog_url as _stac_public_catalog_url, start_periodic_refresh as _stac_start_periodic_refresh, discovery_enabled as _stac_discovery_enabled, default_catalog_token as _stac_default_catalog_token
 
-# Workaround for https://github.com/boettiger-lab/mcp-data-server/issues/5
+# Workaround for https://github.com/SchmidtDSE/geo-query/issues/5
 # send_notification crashes with ClosedResourceError when the client disconnects
 # (e.g. after a ~60s client-side timeout) while a query is still running.
 # The MCP library should catch this in send_notification; patch it until upstream fixes it.

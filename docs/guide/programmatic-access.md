@@ -11,7 +11,7 @@ This page works one real example three ways, in both R and Python:
 You never have to write SQL: `dbplyr` and ibis compile it for you, and the
 server will happily run what they produce.
 
-Full runnable scripts are in the [`examples/`](https://github.com/boettiger-lab/mcp-data-server/tree/main/examples) folder.
+Full runnable scripts are in the [`examples/`](https://github.com/SchmidtDSE/geo-query/tree/main/examples) folder.
 
 ## A worked example: birds and income in New Haven
 
@@ -326,7 +326,7 @@ tracts <- mcp_call("query", list(sql_query = sql)) |>
 ```
 
 `query` answers with a markdown table; `parse_md_table()` (in
-[the full script](https://github.com/boettiger-lab/mcp-data-server/blob/main/examples/new_haven_birds_mcp.R))
+[the full script](https://github.com/SchmidtDSE/geo-query/blob/main/examples/new_haven_birds_mcp.R))
 is a dozen lines of `strsplit`. Keep every column character on the way back —
 tract ids are FIPS codes, and `as.numeric()` would eat their leading zero.
 
