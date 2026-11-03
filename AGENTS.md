@@ -114,10 +114,10 @@ serving the old guidance while looking healthy. Gating a prompt change on that d
 validating the wrong image. Check the run, not the branch:
 
 ```bash
-gh api "repos/boettiger-lab/mcp-data-server/actions/workflows/docker.yml/runs?per_page=5" \
+gh api "repos/SchmidtDSE/geo-query/actions/workflows/docker.yml/runs?per_page=5" \
   --jq '.workflow_runs[] | "\(.head_branch)\t\(.head_sha[0:8])\t\(.status)/\(.conclusion)"'
 # no row for your commit on `main`? re-trigger it:
-gh workflow run docker.yml -R boettiger-lab/mcp-data-server --ref main
+gh workflow run docker.yml -R SchmidtDSE/geo-query --ref main
 ```
 
 Then verify convergence (below) and confirm `/version` reports your `git_sha` — **sample it
@@ -126,7 +126,7 @@ previous sha.
 
 **Manual fallback**, only when the automation is unavailable — `deploy-dev.yml` skips
 cleanly when `NRP_DEPLOY_KUBECONFIG` is unset, and that skip is the signal:
-`kubectl -n biodiversity set image deployment/dev-duckdb-mcp server=ghcr.io/boettiger-lab/mcp-data-server:main@sha256:<digest>`,
+`kubectl -n biodiversity set image deployment/dev-duckdb-mcp server=ghcr.io/schmidtdse/geo-query:main@sha256:<digest>`,
 then verify convergence.
 
 **`k8s/dev-deployment.yaml` is the shape of the Deployment, not a record of what dev is
@@ -186,7 +186,7 @@ GHCR packages API needs a `read:packages` token most of our `gh` logins don't ca
 anonymous pull token against the registry v2 API works anywhere `curl` does — substitute
 `main` or `vX.Y.Z` for `<tag>`:
 ```
-repo=boettiger-lab/mcp-data-server
+repo=SchmidtDSE/geo-query
 tok=$(curl -s "https://ghcr.io/token?scope=repository:$repo:pull" \
       | python3 -c "import sys,json;print(json.load(sys.stdin)['token'])")
 curl -sI -H "Authorization: Bearer $tok" \

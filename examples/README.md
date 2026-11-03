@@ -5,7 +5,7 @@
 One analysis — *bird observations vs. median household income, by census tract, in New Haven
 CT* — written four ways. Each pair is the same pipeline run two different
 places, so the diff between them is exactly the "local vs. server" trade.
-Walked through in [Programmatic Access](https://boettiger-lab.github.io/mcp-data-server/guide/programmatic-access.html).
+Walked through in [Programmatic Access](https://schmidtdse.github.io/geo-query/guide/programmatic-access.html).
 
 | File | Query language | Runs where |
 |---|---|---|

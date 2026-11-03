@@ -17,8 +17,8 @@ Good first areas to contribute:
 - **STAC catalog enhancements**
 - **Documentation improvements**
 
-Browse [open issues](https://github.com/boettiger-lab/mcp-data-server/issues) for
-concrete tasks, or open a [Discussion](https://github.com/boettiger-lab/mcp-data-server/discussions)
+Browse [open issues](https://github.com/SchmidtDSE/geo-query/issues) for
+concrete tasks, or open a [Discussion](https://github.com/SchmidtDSE/geo-query/discussions)
 to propose an idea or ask a question before writing code.
 
 ## Development setup
@@ -26,7 +26,7 @@ to propose an idea or ask a question before writing code.
 The server is a Python application. Clone the repo and install dependencies:
 
 ```bash
-git clone https://github.com/boettiger-lab/mcp-data-server
+git clone https://github.com/SchmidtDSE/geo-query
 cd mcp-data-server
 pip install -r requirements.txt
 ```
@@ -55,7 +55,7 @@ every pull request (`.github/workflows/test.yml`).
 
 End-user docs are a [VitePress](https://vitepress.dev/) site under
 [`docs/`](docs/), published to
-<https://boettiger-lab.github.io/mcp-data-server/>. To preview locally:
+<https://schmidtdse.github.io/geo-query/>. To preview locally:
 
 ```bash
 npm install
@@ -78,9 +78,9 @@ will merge.
 ## Reporting bugs and asking questions
 
 - **Bugs / feature requests:** open a
-  [GitHub Issue](https://github.com/boettiger-lab/mcp-data-server/issues).
+  [GitHub Issue](https://github.com/SchmidtDSE/geo-query/issues).
 - **Questions / ideas:** start a
-  [GitHub Discussion](https://github.com/boettiger-lab/mcp-data-server/discussions).
+  [GitHub Discussion](https://github.com/SchmidtDSE/geo-query/discussions).
 - **Dataset questions:** use the `browse_stac_catalog` tool or browse the
   [public STAC catalog](https://s3-west.nrp-nautilus.io/public-data/stac/catalog.json).
 

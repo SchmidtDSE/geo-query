@@ -3,8 +3,8 @@
 How this server and its client apps discover and read datasets — and what that
 means for swapping, mixing, and backing up data sources (e.g. Ceph ↔ source.coop
 mirror ↔ minio). Reference/design note; the actionable follow-ups are tracked in
-[#263](https://github.com/boettiger-lab/mcp-data-server/issues/263) and
-[#264](https://github.com/boettiger-lab/mcp-data-server/issues/264).
+[#263](https://github.com/SchmidtDSE/geo-query/issues/263) and
+[#264](https://github.com/SchmidtDSE/geo-query/issues/264).
 
 ## Two models
 
@@ -42,7 +42,7 @@ from the replica's own `S3_SOURCES` env), and for the same reason: an argument
 the model supplies is an argument the model can change, so the data universe was
 being re-decided on every call. A geo-agent app configured with a handful of
 collections could still be talked into reporting on anything in any catalog
-([#420](https://github.com/boettiger-lab/mcp-data-server/issues/420),
+([#420](https://github.com/SchmidtDSE/geo-query/issues/420),
 client-side counterpart boettiger-lab/geo-agent#354).
 
 Concretely, since #420:
@@ -100,7 +100,7 @@ Therefore:
 - **Mix sources.** Natural *at the link level* — each dataset carries its own
   `collection_url` from any host, and MCP `get_stac_details` renders whatever
   inline STAC it's given. The two chokepoints that tripped up *novel* sources
-  ([#264](https://github.com/boettiger-lab/mcp-data-server/issues/264)) are now
+  ([#264](https://github.com/SchmidtDSE/geo-query/issues/264)) are now
   handled by the **source registry** (`s3config.py`, extensible per deployment
   via `S3_SOURCES`):
   1. **Query endpoint secrets** — every registry source with a `secret` entry
@@ -114,7 +114,7 @@ Therefore:
      `query`), so carry-the-links works without pre-configuration.
   Composition by **linking whole catalogs** (catalog-of-catalogs) is separately
   blocked by the catalog-walk limits in
-  [#263](https://github.com/boettiger-lab/mcp-data-server/issues/263); composition
+  [#263](https://github.com/SchmidtDSE/geo-query/issues/263); composition
   by **listing collections** (the geo-agent pattern) works today.
 
 ## Does this trip up existing workflows?

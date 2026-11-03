@@ -127,7 +127,7 @@ changes. Two caveats:
 - **Hex-tile builds write.** `register_hex_tiles` writes its pyramid to
   `s3://public-output` on the default backend, anonymously; the mirror must be
   open for anonymous Get/Put/List (`mc anonymous set public <alias>/public-output`).
-  Verified end-to-end in [#279](https://github.com/boettiger-lab/mcp-data-server/issues/279).
+  Verified end-to-end in [#279](https://github.com/SchmidtDSE/geo-query/issues/279).
   To redirect *only* tile output while the default stays on Ceph, use a scoped
   entry: `{"name":"minio_output","secret":{"endpoint":"minio.carlboettiger.info","scope":"s3://public-output"}}`.
 - **Booting mid-outage.** With `STAC_CATALOG_URL` on the mirror the head starts

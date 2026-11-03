@@ -31,7 +31,9 @@ import os
 import re
 import sys
 
-REPO_IMAGE = "ghcr.io/boettiger-lab/mcp-data-server"
+# The repo moved to SchmidtDSE/geo-query on 2026-11-03 (glen-ops#165). Deployments
+# promoted before then still pin the old package by digest, so both names are ours.
+REPO_IMAGES = ("ghcr.io/schmidtdse/geo-query", "ghcr.io/boettiger-lab/mcp-data-server")
 IMAGE_LINE = re.compile(r"^\s*image:\s*(\S+)")
 ALLOW_MUTABLE = "ci-image-pin: allow-mutable"
 VERSION_TAG = re.compile(r":(v\d+\.\d+\.\d+)@sha256:")
@@ -69,7 +71,7 @@ def main():
             if not m:
                 continue
             ref = m.group(1).strip().strip("'\"")
-            if not ref.startswith(REPO_IMAGE):
+            if not ref.startswith(REPO_IMAGES):
                 continue  # sidecars / other images are out of scope
             checked += 1
             if "@sha256:" in ref:

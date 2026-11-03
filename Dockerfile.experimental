@@ -7,7 +7,7 @@
 # BASE_TAG=<sha> so the experimental image is pinned to the exact base build from
 # the same run, not to whatever :main happens to be at pull time.
 ARG BASE_TAG=main
-FROM ghcr.io/boettiger-lab/mcp-data-server:${BASE_TAG}
+FROM ghcr.io/schmidtdse/geo-query:${BASE_TAG}
 
 # Community extensions. These pull GDAL into the query path (raster) and add a
 # chunked-array reader (zarr) — the reason this image is kept separate from the

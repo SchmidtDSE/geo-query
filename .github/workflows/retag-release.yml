@@ -50,7 +50,7 @@ jobs:
 
       - name: Refuse to re-point an existing release tag
         run: |
-          repo=ghcr.io/boettiger-lab/mcp-data-server
+          repo=ghcr.io/schmidtdse/geo-query
           if docker buildx imagetools inspect "$repo:${{ inputs.version }}" >/dev/null 2>&1; then
             echo "::error::$repo:${{ inputs.version }} already exists — release tags are immutable"
             exit 1
@@ -58,12 +58,12 @@ jobs:
 
       - name: Retag
         run: |
-          repo=ghcr.io/boettiger-lab/mcp-data-server
+          repo=ghcr.io/schmidtdse/geo-query
           docker buildx imagetools create -t "$repo:${{ inputs.version }}" "$repo@${{ inputs.digest }}"
 
       - name: Verify the tag resolves to the requested digest
         run: |
-          repo=ghcr.io/boettiger-lab/mcp-data-server
+          repo=ghcr.io/schmidtdse/geo-query
           got=$(docker buildx imagetools inspect "$repo:${{ inputs.version }}" --format '{{.Manifest.Digest}}')
           echo "requested: ${{ inputs.digest }}"
           echo "resolved:  $got"

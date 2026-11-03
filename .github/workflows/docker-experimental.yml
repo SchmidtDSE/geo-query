@@ -1,6 +1,6 @@
 name: Build experimental Docker image
 
-# Builds ghcr.io/boettiger-lab/mcp-data-server:experimental from
+# Builds ghcr.io/schmidtdse/geo-query:experimental from
 # Dockerfile.experimental — the default image plus the `raster` and `zarr`
 # community extensions (issue #354).
 #
@@ -49,7 +49,7 @@ jobs:
           context: .
           file: Dockerfile.experimental
           push: true
-          tags: ghcr.io/boettiger-lab/mcp-data-server:experimental
+          tags: ghcr.io/schmidtdse/geo-query:experimental
           build-args: |
             BASE_TAG=${{ github.event.inputs.base_tag || 'main' }}
             APP_VERSION=experimental
@@ -62,7 +62,7 @@ jobs:
 
       - name: Smoke-test image
         run: |
-          image="ghcr.io/boettiger-lab/mcp-data-server@${{ steps.build.outputs.digest }}"
+          image="ghcr.io/schmidtdse/geo-query@${{ steps.build.outputs.digest }}"
           docker pull "$image"
           # Stock extensions must still work, and both extras must load and expose
           # their entry points — a silently-missing extension would otherwise only

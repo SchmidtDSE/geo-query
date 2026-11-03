@@ -26,7 +26,7 @@ engine today. A working GPU-accelerated prototype —
 [`mcp-gpu-data-server`](https://github.com/boettiger-lab/mcp-gpu-data-server), built on
 Polars / cuDF with KvikIO for fast S3 reads and partition pruning — already exists and is
 being benchmarked head-to-head against this CPU server
-([tracked in issue #42](https://github.com/boettiger-lab/mcp-data-server/issues/42)).
+([tracked in issue #42](https://github.com/SchmidtDSE/geo-query/issues/42)).
 Early findings are nuanced: S3-I/O-bound queries favor CPU, while compute-heavy queries on
 already-loaded data favor GPU. The goal is to let an agent transparently use whichever
 engine fits the query, all behind the same MCP interface.
@@ -49,5 +49,5 @@ reducing dependence on closed models.
 ---
 
 Have a use case that needs one of these sooner? Open an
-[issue](https://github.com/boettiger-lab/mcp-data-server/issues) — concrete use cases drive
+[issue](https://github.com/SchmidtDSE/geo-query/issues) — concrete use cases drive
 prioritization.

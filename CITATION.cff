@@ -9,8 +9,8 @@ authors:
     given-names: Carl
     orcid: "https://orcid.org/0000-0002-1642-628X"
     affiliation: University of California, Berkeley
-repository-code: "https://github.com/boettiger-lab/mcp-data-server"
-url: "https://boettiger-lab.github.io/mcp-data-server/"
+repository-code: "https://github.com/SchmidtDSE/geo-query"
+url: "https://schmidtdse.github.io/geo-query/"
 abstract: >-
   An open Model Context Protocol (MCP) server that connects AI agents to
   cloud-native data. It grounds agents in STAC metadata and confines them to

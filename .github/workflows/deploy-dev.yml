@@ -25,7 +25,7 @@ jobs:
       (github.event.workflow_run.conclusion == 'success' &&
        github.event.workflow_run.head_branch == 'main')
     env:
-      REPO: ghcr.io/boettiger-lab/mcp-data-server
+      REPO: ghcr.io/schmidtdse/geo-query
       NS: biodiversity
       DEPLOY: dev-duckdb-mcp
       CONTAINER: server
@@ -45,12 +45,12 @@ jobs:
         if: env.HAS_CRED == 'true'
         id: digest
         run: |
-          tok=$(curl -s "https://ghcr.io/token?scope=repository:boettiger-lab/mcp-data-server:pull" \
+          tok=$(curl -s "https://ghcr.io/token?scope=repository:schmidtdse/geo-query:pull" \
                 | python3 -c "import sys,json;print(json.load(sys.stdin)['token'])")
           d=$(curl -sI -H "Authorization: Bearer $tok" \
                 -H "Accept: application/vnd.oci.image.index.v1+json" \
                 -H "Accept: application/vnd.docker.distribution.manifest.v2+json" \
-                "https://ghcr.io/v2/boettiger-lab/mcp-data-server/manifests/main" \
+                "https://ghcr.io/v2/schmidtdse/geo-query/manifests/main" \
               | grep -i '^docker-content-digest:' | tr -d '\r' | awk '{print $2}')
           [ -n "$d" ] || { echo "could not resolve :main digest" >&2; exit 1; }
           echo "digest=$d" >> "$GITHUB_OUTPUT"
