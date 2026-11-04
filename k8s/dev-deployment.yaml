@@ -42,7 +42,7 @@ spec:
         # drift onto different builds with no signal, exactly the cross-pod skew
         # dev's ≥2 replicas exist to catch. The tag prefix is for humans; the
         # digest is enforced. See issue #341.
-        image: ghcr.io/boettiger-lab/mcp-data-server:main@sha256:dd626e6f0830ed0423016ab1356b3118a94205ede25ae2f725ae161bdc324ea6
+        image: ghcr.io/schmidtdse/geo-query:main@sha256:2df578ffc7a4dce1d24722df0b9e7ed43ffa146001fadfe450905580264ef7e2
         imagePullPolicy: IfNotPresent
         env:
         - name: STAC_CATALOG_URL
