@@ -2,7 +2,7 @@
 layout: home
 
 hero:
-  name: MCP Data Server
+  name: geo-query
   text: The bridge between AI agents and cloud-native data
   tagline: An open Model Context Protocol server that grounds coding agents in STAC metadata and confines them to validated cloud-native engines — so any LLM client can query terabyte-scale data over S3 without downloading it, misreading it, or silently failing at scale.
   actions:

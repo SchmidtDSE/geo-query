@@ -1,5 +1,5 @@
 export default {
-  title: 'MCP Data Server',
+  title: 'geo-query',
   description: 'An open MCP server that connects AI agents to cloud-native data — grounding them in STAC metadata and validated query engines (DuckDB on S3).',
   base: '/geo-query/',
 
