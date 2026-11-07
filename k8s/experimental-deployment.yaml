@@ -48,6 +48,9 @@ spec:
             secretKeyRef:
               name: duckdb-mcp-auth
               key: MCP_AUTH_TOKEN
+        # Hex tiles stay public: their data is in the public-output bucket.
+        - name: MCP_AUTH_PUBLIC_TILES
+          value: "true"
         - name: STAC_ALLOW_DEGRADED_START
           value: "true"
         # Also baked into the image; set here too so `kubectl describe` shows which

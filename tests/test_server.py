@@ -1050,6 +1050,21 @@ class TestHealthz:
         finally:
             server._MCP_AUTH_TOKEN = original
 
+    @pytest.mark.parametrize("public_tiles,expected", [(False, 401), (True, 404)])
+    def test_tiles_gated_unless_public_tiles(self, monkeypatch, public_tiles, expected):
+        """/tiles needs the token by default (private replicas serve private tiles,
+        #343). MCP_AUTH_PUBLIC_TILES lets GETs through to the tile handler, which
+        then 404s an unknown tileset; /mcp stays gated either way."""
+        import server
+        from starlette.testclient import TestClient
+        monkeypatch.setattr(server, "_MCP_AUTH_TOKEN", "test-token")
+        monkeypatch.setattr(server, "_PUBLIC_TILES", public_tiles)
+        client = TestClient(self._build_app(with_auth_middleware=True))
+        assert client.get("/tiles/hex/0123456789abcdef/metadata.json").status_code == expected
+        assert client.get("/tiles/hex/not-a-hash/metadata.json").status_code == expected
+        r = client.post("/mcp", json={"jsonrpc": "2.0", "method": "ping", "id": 1})
+        assert r.status_code == 401
+
 
 @pytest.fixture
 def isolated_jobs(monkeypatch, tmp_path):

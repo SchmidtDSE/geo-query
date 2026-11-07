@@ -1188,12 +1188,19 @@ def mount_tiles(app):
 # 9. OPTIONAL BEARER TOKEN AUTH
 # -------------------------------------------------------------------------
 _MCP_AUTH_TOKEN = os.environ.get("MCP_AUTH_TOKEN", "").strip()
+# Public deployments serve hex tiles without the token: the pyramids live in the
+# anonymously readable public-output bucket, and browsers, GitHub Pages apps and
+# exported reports fetch tile URLs directly. Off by default, because a private
+# replica (e.g. wyoming, #343) serves private tiles behind the same token.
+_PUBLIC_TILES = os.environ.get("MCP_AUTH_PUBLIC_TILES", "").strip().lower() in ("1", "true", "yes", "on")
 
 class _BearerAuthMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request, call_next):
         # /healthz must remain reachable to the kubelet probe even with auth on;
         # /version is deliberately public too (version discovery is the whole point).
         if request.url.path in ("/healthz", "/version"):
+            return await call_next(request)
+        if _PUBLIC_TILES and request.method == "GET" and request.url.path.startswith("/tiles/"):
             return await call_next(request)
         auth = request.headers.get("Authorization", "")
         supplied = auth[len("Bearer "):] if auth.startswith("Bearer ") else ""
@@ -1283,7 +1290,8 @@ if __name__ == "__main__":
 
     if _MCP_AUTH_TOKEN:
         app.add_middleware(_BearerAuthMiddleware)
-        print("🔒 Auth enabled (MCP_AUTH_TOKEN is set)", file=sys.stderr)
+        print("🔒 Auth enabled (MCP_AUTH_TOKEN is set)"
+              + ("; /tiles is public" if _PUBLIC_TILES else ""), file=sys.stderr)
     else:
         print("🔓 Auth disabled (MCP_AUTH_TOKEN not set)", file=sys.stderr)
 
