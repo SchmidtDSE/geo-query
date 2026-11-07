@@ -356,3 +356,12 @@ class TestServeMetadata:
         meta_url = tile_url.rsplit("/", 3)[0] + "/metadata.json"
         assert meta_url == f"/tiles/hex/{registered_ca}/metadata.json"
         assert client.get(meta_url).status_code == 200
+
+
+def test_tileset_name_must_be_a_content_hash():
+    from tiles.endpoint import _valid_tileset
+    assert _valid_tileset("hex", "0123456789abcdef")
+    for bad in ["x')", "0123456789ABCDEF", "0123456789abcde", "0123456789abcdef0",
+                "abc'); SELECT 1; --", "..", "0123456789abcdef/../x"]:
+        assert not _valid_tileset("hex", bad), bad
+    assert not _valid_tileset("other", "0123456789abcdef")
