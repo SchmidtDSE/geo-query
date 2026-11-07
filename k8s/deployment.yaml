@@ -16,11 +16,27 @@ spec:
       # The server never calls the Kubernetes API; a mounted token was readable
       # through DuckDB in the 2026-11-06 incident.
       automountServiceAccountToken: false
+      # Non-root, matching the image's app user (uid 10001). fsGroup makes the
+      # mounted token files readable by the app's group.
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
       volumes:
       - name: mcp-tokens
         secret:
           secretName: duckdb-mcp-tokens
-          defaultMode: 0400
+          defaultMode: 0440
+      # Spill space: the root filesystem is read-only. Capped at the namespace's
+      # default ephemeral-storage limit (50Gi on NRP), stated here so the cap
+      # doesn't depend on that default; past it the pod is evicted, not the node
+      # filled. DuckDB stops each connection at half the pod limit before that.
+      - name: tmp
+        emptyDir:
+          sizeLimit: 50Gi
       affinity:
         nodeAffinity:
           requiredDuringSchedulingIgnoredDuringExecution:
@@ -31,7 +47,7 @@ spec:
                     values: ["us-west"]
       containers:
       - name: server
-        image: ghcr.io/schmidtdse/geo-query:v0.9.4@sha256:b91b008707b03fd1ea345ff13985b937b5523d8b1be84f0db404b0096a6cc731
+        image: ghcr.io/schmidtdse/geo-query:v0.9.5@sha256:35c6028e99203b3ac091bb3458e32e221a4ea8004447fb5b016826651de3dffa
         imagePullPolicy: IfNotPresent
         env:
         # Release identity is supplied HERE, not baked into the image (#413). The
@@ -42,7 +58,7 @@ spec:
         # the image's own value is the commit it was built from, which stays correct
         # through a retag.
         - name: APP_VERSION
-          value: "v0.9.4"
+          value: "v0.9.5"
         - name: STAC_CATALOG_URL
           value: "https://s3-west.nrp-nautilus.io/public-data/stac/catalog.json"
         - name: MCP_PUBLIC_BASE_URL
@@ -78,6 +94,13 @@ spec:
         - name: mcp-tokens
           mountPath: /etc/mcp-tokens
           readOnly: true
+        - name: tmp
+          mountPath: /tmp
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop: ["ALL"]
         resources:
           # Requests intentionally kept small (≤2 GiB memory, ≤1 CPU) to land in
           # NRP's "Ignored" bucket for utilization violations. Limits stay high so
