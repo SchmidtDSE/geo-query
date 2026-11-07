@@ -32,7 +32,8 @@ spec:
           defaultMode: 0440
       # Spill space: the root filesystem is read-only.
       - name: tmp
-        emptyDir: {}
+        emptyDir:
+          sizeLimit: 50Gi
       affinity:
         nodeAffinity:
           requiredDuringSchedulingIgnoredDuringExecution:
