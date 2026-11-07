@@ -17,7 +17,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Run as an unprivileged user (NRP incident, 2026-11-06). Nothing here needs
 # root: the server listens on 8000 and writes only spill files under /tmp. The
 # uid is numeric so Kubernetes can check runAsNonRoot.
-RUN useradd --system --uid 10001 --user-group --create-home --home-dir /home/app app
+RUN groupadd --system --gid 10001 app \
+    && useradd --system --uid 10001 --gid 10001 --create-home --home-dir /home/app app
 ENV HOME=/home/app PYTHONDONTWRITEBYTECODE=1
 USER 10001
 
