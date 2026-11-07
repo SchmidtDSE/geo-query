@@ -30,9 +30,13 @@ spec:
         secret:
           secretName: duckdb-mcp-tokens
           defaultMode: 0440
-      # Spill space: the root filesystem is read-only.
+      # Spill space: the root filesystem is read-only. Capped at the namespace's
+      # default ephemeral-storage limit (50Gi on NRP), stated here so the cap
+      # doesn't depend on that default; past it the pod is evicted, not the node
+      # filled. DuckDB stops each connection at half the pod limit before that.
       - name: tmp
-        emptyDir: {}
+        emptyDir:
+          sizeLimit: 50Gi
       affinity:
         nodeAffinity:
           requiredDuringSchedulingIgnoredDuringExecution:
