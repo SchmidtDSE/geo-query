@@ -8,7 +8,7 @@ metadata:
 spec:
   # Single replica on purpose: a testing endpoint on a shared cluster, and a
   # single pod keeps a test session pinned to one DuckDB process.
-  replicas: 1
+  replicas: 0  # Scaled down 2026-11-07: unused. Raise to 1 to bring it back.
   selector:
     matchLabels:
       app: experimental-duckdb-mcp

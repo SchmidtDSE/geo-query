@@ -8,18 +8,27 @@ It is one of three open-source components — with [data-workflows](https://boet
 
 ## Quick Start
 
-Add the hosted MCP endpoint to your LLM client, like so: 
+Add the hosted MCP endpoint to your LLM client, like so. The endpoint needs a
+bearer token (see [Authentication](#authentication)); ask the maintainers for
+one. Keep it in an environment variable or a password prompt, never in a file
+you commit.
 
 
 ### Using VSCode
 
-create a  `.vscode/mcp.json` like this: ([as in this repo](.vscode/mcp.json))
+create a  `.vscode/mcp.json` like this: ([as in this repo](.vscode/mcp.json)).
+VS Code asks for the token once and stores it securely.
 
 ```json
 {
+	"inputs": [
+		{ "type": "promptString", "id": "duckdb-mcp-token",
+		  "description": "Token for duckdb-mcp.nrp-nautilus.io", "password": true }
+	],
 	"servers": {
 		"duckdb-geo": {
-			"url": "https://duckdb-mcp.nrp-nautilus.io/mcp"
+			"url": "https://duckdb-mcp.nrp-nautilus.io/mcp",
+			"headers": { "Authorization": "Bearer ${input:duckdb-mcp-token}" }
 		}
 	}
 }
@@ -39,17 +48,17 @@ Examples:
 
 ### Using Claude Code (CLI)
 
-Run this command once in your terminal:
+This repo's [.mcp.json](.mcp.json) reads the token from the `DUCKDB_MCP_TOKEN`
+environment variable. To add the server to your own projects, export that
+variable and run:
 
 ```bash
-claude mcp add --transport http duckdb-geo https://duckdb-mcp.nrp-nautilus.io/mcp
+claude mcp add --transport http --scope user duckdb-geo https://duckdb-mcp.nrp-nautilus.io/mcp \
+  --header 'Authorization: Bearer ${DUCKDB_MCP_TOKEN}'
 ```
 
-To make it available across all your projects, add `--scope user`:
-
-```bash
-claude mcp add --transport http --scope user duckdb-geo https://duckdb-mcp.nrp-nautilus.io/mcp
-```
+The single quotes keep `${DUCKDB_MCP_TOKEN}` unexpanded, so the token itself
+is not written to your Claude Code settings.
 
 ### Using Claude Desktop
 
@@ -63,13 +72,17 @@ Add to your Claude Desktop configuration file:
 {
   "mcpServers": {
     "duckdb-geo": {
-      "url": "https://duckdb-mcp.nrp-nautilus.io/mcp"
+      "command": "npx",
+      "args": ["mcp-remote", "https://duckdb-mcp.nrp-nautilus.io/mcp",
+               "--header", "Authorization: Bearer ${DUCKDB_MCP_TOKEN}"],
+      "env": { "DUCKDB_MCP_TOKEN": "<your token>" }
     }
   }
 }
 ```
 
-After adding the configuration, restart Claude Desktop.
+This file holds the token in plain text, so keep it private. After adding the
+configuration, restart Claude Desktop.
 
 
 
@@ -257,6 +270,9 @@ pytest --cov=. tests/
 
 - `THREADS` - DuckDB thread count (default: 100 for S3 workloads)
 - `PORT` - HTTP server port (default: 8000)
+- `MCP_AUTH_TOKENS_DIR` - directory of bearer tokens, one file per caller, named for it (see [Authentication](#authentication))
+- `MCP_AUTH_TOKEN` - a single bearer token, named `default`; older deployments use this
+- `MCP_AUTH_PUBLIC_TILES` - `true` serves `GET /tiles/...` without a token (default: off)
 
 ### DuckDB Settings
 
@@ -309,13 +325,73 @@ Pass S3 credentials directly to the `query` tool. The server injects them as a s
 
 ### Deploying private apps without a separate server
 
-Rather than maintaining a forked server deployment per app, private geo-agent apps can share the public MCP server endpoint and pass their credentials per-call. This reduces idle deployments and ensures all apps benefit from server improvements automatically.
+Rather than maintaining a forked server deployment per app, private geo-agent apps can share the public MCP server endpoint and pass their credentials per-call. This reduces idle deployments and ensures all apps benefit from server improvements automatically. Like every app, they still need a bearer token for the endpoint, held server-side (see [Authentication](#authentication)).
 
 ## Security
 
 - **Stateless Design**: No persistent database or user data
 - **Query Isolation**: Each request gets a fresh DuckDB instance; client credentials cannot bleed across requests
 - **DNS Rebinding Protection**: Disabled for MCP HTTP mode
+
+### Authentication
+
+Every route except `/healthz` and `/version` needs `Authorization: Bearer <token>`.
+Deployments that set `MCP_AUTH_PUBLIC_TILES=true` also serve `GET /tiles/...` without
+a token, since the tile pyramids sit in a public bucket and browsers fetch them
+directly. Private replicas leave it off.
+
+Each caller has its own named token, in practice one per Kubernetes namespace of
+apps. The server reads every file in `MCP_AUTH_TOKENS_DIR` as a token named after
+the file. That is the layout of a Secret mounted as a volume, so on NRP the tokens
+live in the `duckdb-mcp-tokens` Secret in `biodiversity`, mounted at
+`/etc/mcp-tokens`. The query log shows the caller's name, never the token
+(`🔍 Executing [schmidtdse]: …`). If `MCP_AUTH_TOKENS_DIR` is set but yields no
+tokens, the server refuses to start rather than start without auth.
+
+Apps keep their token server-side: their nginx proxies a same-origin `/api/mcp`
+to the server and adds the header, so the token never reaches a browser.
+
+To add or revoke a token, edit the Secret, then restart the deployments, because
+tokens are read at startup:
+
+```bash
+# add: generates the token without printing it
+kubectl -n biodiversity get secret duckdb-mcp-tokens -o json \
+  | python3 -c 'import sys,json,base64,secrets; s=json.load(sys.stdin); s["data"]["<name>"]=base64.b64encode(secrets.token_urlsafe(32).encode()).decode(); [s["metadata"].pop(k,None) for k in ("resourceVersion","uid","creationTimestamp","managedFields")]; print(json.dumps(s))' \
+  | kubectl apply -f -
+# revoke
+kubectl -n biodiversity patch secret duckdb-mcp-tokens --type=json -p '[{"op":"remove","path":"/data/<name>"}]'
+# either way
+kubectl -n biodiversity rollout restart deployment/duckdb-mcp deployment/dev-duckdb-mcp
+```
+
+An app in another namespace gets a copy of its own token there as a Secret
+`duckdb-mcp-auth` with key `MCP_AUTH_TOKEN`, which is what the app manifests
+reference.
+
+### Local file access
+
+Queries can read remote data but not the server's own disk. Every DuckDB
+connection that runs caller SQL (the `query` tool, and the tile connections
+behind `register_hex_tiles`) is locked before that SQL runs
+(`dbconfig.lock_down()`):
+
+- `allowed_directories` admits `s3://`, `https://` and the connection's own spill
+  directory under `/tmp`, then `enable_external_access=false` turns everything
+  else off. Local reads and writes, `glob`, `ATTACH`, `INSTALL` and plain
+  `http://` (in-cluster services) are refused.
+- DuckDB will not re-enable external access or change `allowed_directories`
+  once locked, so caller SQL cannot undo it.
+- Persistent secrets are off, so DuckDB never opens `~/.duckdb/stored_secrets`.
+- `INSTALL …` and `SET temp_directory=…` statements are stripped from `query`
+  SQL. They are no-ops here, since extensions ship in the image and each
+  connection already has a private spill directory, but a locked connection
+  would refuse them.
+- Tile names in `/tiles/...` URLs must be 16-hex content hashes before they
+  reach any SQL.
+
+Pods also run with `automountServiceAccountToken: false`, since the server never
+calls the Kubernetes API.
 
 
 ## License
