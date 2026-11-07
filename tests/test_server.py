@@ -1085,6 +1085,30 @@ class TestHealthz:
         assert r.status_code == 401
 
 
+@pytest.fixture(autouse=True)
+def _test_s3_endpoint(monkeypatch):
+    """The tests' stand-in private MinIO host, admitted the way a deployment
+    admits one: through S3_ALLOWED_ENDPOINTS."""
+    monkeypatch.setenv("S3_ALLOWED_ENDPOINTS", "minio.example.org")
+
+
+class TestClientEndpointAllowList:
+    """s3_endpoint decides where s3:// reads go, so only known hosts are accepted."""
+
+    @pytest.mark.parametrize("endpoint", [
+        "open-llm-proxy.biodiversity.svc.cluster.local",
+        "10.96.0.1",
+        "minio.example.org:9000",
+    ])
+    def test_unknown_endpoint_is_refused_before_any_secret(self, endpoint):
+        out = query("SELECT 1", s3_endpoint=endpoint)
+        assert out.startswith("SQL Error:")
+        assert "not an S3 endpoint this server accepts" in out
+
+    def test_known_endpoint_is_accepted(self):
+        assert query("SELECT 42 AS x", s3_endpoint="minio.example.org").strip().endswith("42 |")
+
+
 @pytest.fixture
 def isolated_jobs(monkeypatch, tmp_path):
     """Reset the module-level _jobs dict and point the tile bucket at tmp_path

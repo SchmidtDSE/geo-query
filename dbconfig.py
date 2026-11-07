@@ -152,9 +152,15 @@ def spill_sql() -> list[str]:
 # public `query` tool. Each connection is therefore locked to remote storage
 # plus its own spill directory before any caller SQL runs.
 #
-# `enable_external_access=false` cannot be switched back on, and
-# `allowed_directories` cannot be changed after it, so caller SQL cannot undo
-# the lock. Spilling to the connection's own temp_directory keeps working.
+# All of it is DuckDB's own configuration, enforced by the engine on every file
+# and URL access:
+# - `allowed_directories` + `enable_external_access=false`: only the listed
+#   remote prefixes and the connection's spill directory are reachable.
+# - Extension autoload/autoinstall and community extensions off: no extension
+#   code runs beyond what the server loaded.
+# - `lock_configuration=true` last: caller SQL can change no setting at all
+#   (SET, RESET and PRAGMA all fail), so it cannot undo any of the above or
+#   raise memory_limit. Spilling to the connection's temp_directory still works.
 
 # Remote prefixes caller SQL may read and write. Plain http:// is deliberately
 # absent: it would reach unencrypted in-cluster services.
@@ -171,13 +177,14 @@ def disable_persistent_secrets_sql() -> str:
 
 
 def lock_down(conn, extra_dirs=()) -> None:
-    """Restrict `conn` to remote storage plus its own spill directory.
+    """Restrict `conn` to remote storage plus its own spill directory, then
+    freeze its configuration.
 
-    Call last, after extensions are loaded and secrets are created: once locked,
-    LOAD of a new extension, INSTALL, SET temp_directory and any local path fail.
-    `extra_dirs` admits local directories the server itself writes (a local
-    TILE_BUCKET_BASE in tests). Raises on failure — a connection that cannot be
-    locked must not run caller SQL.
+    Call last, after every SET, LOAD and CREATE SECRET the server needs: once
+    locked, any setting change, INSTALL, LOAD of a new extension and any local
+    path fail. `extra_dirs` admits local directories the server itself writes (a
+    local TILE_BUCKET_BASE in tests). Raises on failure — a connection that
+    cannot be locked must not run caller SQL.
     """
     temp_dir = conn.sql("SELECT current_setting('temp_directory')").fetchone()[0]
     allowed = list(_REMOTE_PREFIXES)
@@ -185,21 +192,23 @@ def lock_down(conn, extra_dirs=()) -> None:
         if d and "://" not in d:
             allowed.append(d.rstrip("/") + "/")
     conn.sql("SET allowed_directories=[" + ", ".join(f"'{sql_quote(a)}'" for a in allowed) + "]")
+    conn.sql("SET autoinstall_known_extensions=false")
+    conn.sql("SET autoload_known_extensions=false")
+    conn.sql("SET allow_community_extensions=false")
     conn.sql("SET enable_external_access=false")
+    conn.sql("SET lock_configuration=true")
 
 
-# Statements models copy from older setup guidance that are no-ops on this
-# server (extensions are pre-installed in the image, and each connection already
-# has a private spill directory) but are refused once a connection is locked.
-_NOOP_STMT = re.compile(
-    r"(?:(?<=;)|^)\s*(?:INSTALL\s+\w+(?:\s+FROM\s+\w+)?|SET\s+temp_directory\s*(?:=|TO)\s*'[^']*')\s*(?:;|$)",
-    re.IGNORECASE,
+# Shown with the DuckDB error when caller SQL tries to change the locked setup.
+LOCKED_HINT = (
+    "This server configures every connection itself (settings, extensions, S3 "
+    "secrets). Remove SET, RESET, PRAGMA and INSTALL statements and run the "
+    "query again."
 )
 
 
-def strip_noop_statements(sql: str) -> str:
-    """Drop INSTALL and SET temp_directory statements from caller SQL."""
-    prev = None
-    while prev != sql:
-        prev, sql = sql, _NOOP_STMT.sub("", sql)
-    return sql.strip()
+def locked_hint(error: str) -> str:
+    """The hint to add to a DuckDB error, or '' if the error is unrelated."""
+    if "configuration has been locked" in error or "extensions" in error and "Permission Error" in error:
+        return LOCKED_HINT
+    return ""
