@@ -13,6 +13,9 @@ spec:
       labels:
         app: duckdb-mcp
     spec:
+      # The server never calls the Kubernetes API; a mounted token was readable
+      # through DuckDB in the 2026-11-06 incident.
+      automountServiceAccountToken: false
       affinity:
         nodeAffinity:
           requiredDuringSchedulingIgnoredDuringExecution:
@@ -39,6 +42,17 @@ spec:
           value: "https://s3-west.nrp-nautilus.io/public-data/stac/catalog.json"
         - name: MCP_PUBLIC_BASE_URL
           value: "https://duckdb-mcp.nrp-nautilus.io"
+        # Bearer-token auth (#43): every route except /healthz and /version needs
+        # `Authorization: Bearer <token>`. The token lives only in the
+        # duckdb-mcp-auth Secret; apps add it server-side in their nginx.
+        - name: MCP_AUTH_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: duckdb-mcp-auth
+              key: MCP_AUTH_TOKEN
+        # Hex tiles stay public: their data is in the public-output bucket.
+        - name: MCP_AUTH_PUBLIC_TILES
+          value: "true"
         # Pod's cgroup memory limit → DuckDB memory_limit (~80%), so an oversized
         # query spills to /tmp instead of OOM-killing the replica and every
         # co-tenant query on it (#270).

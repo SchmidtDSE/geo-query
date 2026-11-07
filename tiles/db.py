@@ -10,7 +10,7 @@ import sys
 import duckdb
 
 from s3config import default_s3_secret_sql, source_secret_sql
-from dbconfig import memory_limit_sql, spill_sql
+from dbconfig import disable_persistent_secrets_sql, lock_down, memory_limit_sql, spill_sql
 
 
 def build_tile_connection(threads: int | None = None) -> duckdb.DuckDBPyConnection:
@@ -31,6 +31,7 @@ def build_tile_connection(threads: int | None = None) -> duckdb.DuckDBPyConnecti
       (server._build_executor) so this never slows tile reads.
     """
     con = duckdb.connect(":memory:")
+    con.sql(disable_persistent_secrets_sql())
     con.sql("LOAD httpfs")
     con.sql("LOAD spatial")
     con.sql("LOAD h3")
@@ -86,4 +87,8 @@ def build_tile_connection(threads: int | None = None) -> duckdb.DuckDBPyConnecti
     # here too (previously only the query connections had the mirror secret).
     for stmt in source_secret_sql():
         con.sql(stmt)
+    # Last: register_hex_tiles runs caller SQL here too, so no local file access
+    # (NRP incident 2026-11-06). A local TILE_BUCKET_BASE (tests) stays writable.
+    tile_base = os.environ.get("TILE_BUCKET_BASE", "s3://public-output")
+    lock_down(con, extra_dirs=(tile_base,))
     return con

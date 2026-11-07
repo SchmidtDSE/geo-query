@@ -11,6 +11,7 @@ Verified DuckDB signatures (from Task 1 probe, commit 0ff46e8):
 import json
 import math
 import os
+import re
 import sys
 import time
 import anyio
@@ -42,6 +43,16 @@ def _lat_to_merc_y(lat: float) -> float:
     """Convert latitude (degrees) to Web Mercator Y (EPSG:3857)."""
     y = math.log(math.tan((90.0 + lat) * math.pi / 360.0)) / (math.pi / 180.0)
     return y * 20037508.34 / 180.0
+
+
+# Tileset names are content hashes (tile_math.content_hash: 16 hex chars). They
+# come from the URL path and are interpolated into SQL, so anything else is
+# refused before it reaches DuckDB.
+_TILESET_NAME = re.compile(r"^[0-9a-f]{16}$")
+
+
+def _valid_tileset(namespace: str, name: str) -> bool:
+    return namespace == "hex" and bool(_TILESET_NAME.match(name))
 
 
 def _bucket_base() -> str:
@@ -281,7 +292,7 @@ async def serve_metadata(request: Request) -> Response:
     namespace = request.path_params["namespace"]
     name = request.path_params["name"]
 
-    if namespace != "hex":
+    if not _valid_tileset(namespace, name):
         return Response(status_code=404)
 
     con = request.app.state.tile_con
@@ -301,7 +312,7 @@ async def serve_tile(request: Request) -> Response:
     x = int(request.path_params["x"])
     y = int(request.path_params["y"])
 
-    if namespace != "hex":
+    if not _valid_tileset(namespace, name):
         return Response(status_code=404)
 
     con = request.app.state.tile_con

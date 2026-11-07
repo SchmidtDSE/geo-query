@@ -232,6 +232,9 @@ from dbconfig import (
     duckdb_max_temp_directory_size,
     duckdb_memory_limit,
     memory_limit_sql,
+    disable_persistent_secrets_sql,
+    lock_down,
+    strip_noop_statements,
     spill_sql,
 )
 
@@ -265,6 +268,7 @@ def get_isolated_db(s3_key: str = None, s3_secret: str = None, s3_endpoint: str 
         )
     conn = duckdb.connect(database=":memory:")
     try:
+        conn.sql(disable_persistent_secrets_sql())
         for stmt in (s.strip() for s in SETUP_SQL.split(";") if s.strip()):
             try:
                 conn.sql(stmt)
@@ -366,6 +370,8 @@ def get_isolated_db(s3_key: str = None, s3_secret: str = None, s3_endpoint: str 
                 conn.sql(default_s3_secret_sql())
             except Exception as e:
                 print(f"⚠️ Default S3 secret setup skipped: {e}", file=sys.stderr)
+        # Last: no local file access for caller SQL (NRP incident 2026-11-06).
+        lock_down(conn)
         yield conn
     finally:
         conn.close()
@@ -467,7 +473,7 @@ def query(sql_query: str, s3_key: str = None, s3_secret: str = None, s3_endpoint
     print(f"🔍 Executing: {sql_query}", file=sys.stderr)
     try:
         with get_isolated_db(s3_key=s3_key, s3_secret=s3_secret, s3_endpoint=s3_endpoint, s3_scope=s3_scope, s3_region=s3_region, s3_url_style=s3_url_style) as db:
-            result = db.sql(sql_query)
+            result = db.sql(strip_noop_statements(sql_query))
             if result is None: return "Command executed successfully."
 
             # Drop geometry columns — GEOMETRY('OGC:CRS84') crashes pandas conversion
@@ -1182,12 +1188,19 @@ def mount_tiles(app):
 # 9. OPTIONAL BEARER TOKEN AUTH
 # -------------------------------------------------------------------------
 _MCP_AUTH_TOKEN = os.environ.get("MCP_AUTH_TOKEN", "").strip()
+# Public deployments serve hex tiles without the token: the pyramids live in the
+# anonymously readable public-output bucket, and browsers, GitHub Pages apps and
+# exported reports fetch tile URLs directly. Off by default, because a private
+# replica (e.g. wyoming, #343) serves private tiles behind the same token.
+_PUBLIC_TILES = os.environ.get("MCP_AUTH_PUBLIC_TILES", "").strip().lower() in ("1", "true", "yes", "on")
 
 class _BearerAuthMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request, call_next):
         # /healthz must remain reachable to the kubelet probe even with auth on;
         # /version is deliberately public too (version discovery is the whole point).
         if request.url.path in ("/healthz", "/version"):
+            return await call_next(request)
+        if _PUBLIC_TILES and request.method == "GET" and request.url.path.startswith("/tiles/"):
             return await call_next(request)
         auth = request.headers.get("Authorization", "")
         supplied = auth[len("Bearer "):] if auth.startswith("Bearer ") else ""
@@ -1277,7 +1290,8 @@ if __name__ == "__main__":
 
     if _MCP_AUTH_TOKEN:
         app.add_middleware(_BearerAuthMiddleware)
-        print("🔒 Auth enabled (MCP_AUTH_TOKEN is set)", file=sys.stderr)
+        print("🔒 Auth enabled (MCP_AUTH_TOKEN is set)"
+              + ("; /tiles is public" if _PUBLIC_TILES else ""), file=sys.stderr)
     else:
         print("🔓 Auth disabled (MCP_AUTH_TOKEN not set)", file=sys.stderr)
 

@@ -166,3 +166,74 @@ class TestSpillBehaviour:
                            text=True, timeout=300)
         assert r.returncode == 0, f"exit {r.returncode}: {r.stderr[-2000:]}"
         assert list(tmp_path.iterdir()) == []
+
+
+# --- Filesystem lockdown (NRP incident 2026-11-06) --------------------------
+import duckdb as _duckdb
+import pytest as _pytest
+
+from dbconfig import (
+    disable_persistent_secrets_sql,
+    lock_down,
+    spill_sql,
+    strip_noop_statements,
+)
+
+
+def _locked_conn(tmp_path, monkeypatch):
+    monkeypatch.setenv("DUCKDB_TEMP_ROOT", str(tmp_path))
+    con = _duckdb.connect(":memory:")
+    con.sql(disable_persistent_secrets_sql())
+    for stmt in spill_sql():
+        con.sql(stmt)
+    lock_down(con)
+    return con
+
+
+@_pytest.mark.parametrize("sql", [
+    "SELECT * FROM read_text('/etc/hostname')",
+    "SELECT * FROM read_blob('/proc/self/environ')",
+    "SELECT * FROM glob('/var/run/*')",
+    "COPY (SELECT 1) TO '/tmp/lockdown-probe.csv'",
+    "ATTACH '/tmp/lockdown-probe.db'",
+    "SELECT * FROM read_text('http://example.com/')",
+    "SET enable_external_access=true",
+    "SET allowed_directories=['/']",
+    "SET temp_directory='/tmp'",
+])
+def test_lock_down_refuses_local_access(tmp_path, monkeypatch, sql):
+    con = _locked_conn(tmp_path, monkeypatch)
+    with _pytest.raises(_duckdb.Error):
+        con.sql(sql).fetchall()
+
+
+def test_lock_down_still_spills(tmp_path, monkeypatch):
+    con = _locked_conn(tmp_path, monkeypatch)
+    con.sql("SET memory_limit='200MB'")
+    con.sql("SET threads=2")
+    con.sql("SET preserve_insertion_order=false")
+    n = con.sql("SELECT count(*) FROM (SELECT i % 3000000 AS k, sum(i) FROM range(20000000) t(i) GROUP BY k)").fetchone()[0]
+    assert n == 3000000
+
+
+def test_lock_down_allows_extra_local_dir(tmp_path, monkeypatch):
+    out = tmp_path / "tiles"
+    out.mkdir()
+    monkeypatch.setenv("DUCKDB_TEMP_ROOT", str(tmp_path))
+    con = _duckdb.connect(":memory:")
+    for stmt in spill_sql():
+        con.sql(stmt)
+    lock_down(con, extra_dirs=(str(out), "s3://public-output"))
+    con.sql(f"COPY (SELECT 1 AS x) TO '{out}/a.csv'")
+    assert (out / "a.csv").exists()
+
+
+@_pytest.mark.parametrize("raw,expected", [
+    ("SET THREADS=100; SET temp_directory='/tmp'; LOAD h3; SELECT 1",
+     "SET THREADS=100; LOAD h3; SELECT 1"),
+    ("INSTALL h3 FROM community; INSTALL httpfs;\nSELECT 1", "SELECT 1"),
+    ("set temp_directory = '/tmp'", ""),
+    ("SELECT 'SET temp_directory=''/tmp''' AS s", "SELECT 'SET temp_directory=''/tmp''' AS s"),
+])
+def test_strip_noop_statements(raw, expected):
+    assert strip_noop_statements(raw).strip() == expected

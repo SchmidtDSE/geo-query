@@ -917,6 +917,8 @@ class TestTileRouteMounted:
         from tiles.db import build_tile_connection
         from tiles.pyramid import write_lock, read_lock
         monkeypatch.setattr(server, "_LOCK_HEARTBEAT_SECONDS", 0.05)
+        # Tile connections may only write locally under TILE_BUCKET_BASE (lockdown).
+        monkeypatch.setenv("TILE_BUCKET_BASE", str(tmp_path))
         uri = str(tmp_path) + "/"
         con = build_tile_connection(threads=1)
         try:
@@ -1047,6 +1049,21 @@ class TestHealthz:
             assert "version" in r.json()
         finally:
             server._MCP_AUTH_TOKEN = original
+
+    @pytest.mark.parametrize("public_tiles,expected", [(False, 401), (True, 404)])
+    def test_tiles_gated_unless_public_tiles(self, monkeypatch, public_tiles, expected):
+        """/tiles needs the token by default (private replicas serve private tiles,
+        #343). MCP_AUTH_PUBLIC_TILES lets GETs through to the tile handler, which
+        then 404s an unknown tileset; /mcp stays gated either way."""
+        import server
+        from starlette.testclient import TestClient
+        monkeypatch.setattr(server, "_MCP_AUTH_TOKEN", "test-token")
+        monkeypatch.setattr(server, "_PUBLIC_TILES", public_tiles)
+        client = TestClient(self._build_app(with_auth_middleware=True))
+        assert client.get("/tiles/hex/0123456789abcdef/metadata.json").status_code == expected
+        assert client.get("/tiles/hex/not-a-hash/metadata.json").status_code == expected
+        r = client.post("/mcp", json={"jsonrpc": "2.0", "method": "ping", "id": 1})
+        assert r.status_code == 401
 
 
 @pytest.fixture
