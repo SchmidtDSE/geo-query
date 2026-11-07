@@ -176,7 +176,7 @@ from dbconfig import (
     disable_persistent_secrets_sql,
     lock_down,
     spill_sql,
-    strip_noop_statements,
+    locked_hint,
 )
 
 
@@ -200,6 +200,12 @@ def _locked_conn(tmp_path, monkeypatch):
     "SET enable_external_access=true",
     "SET allowed_directories=['/']",
     "SET temp_directory='/tmp'",
+    "SET memory_limit='100GB'",
+    "SET threads=4",
+    "RESET memory_limit",
+    "PRAGMA threads=4",
+    "SET lock_configuration=false",
+    "INSTALL fts",
 ])
 def test_lock_down_refuses_local_access(tmp_path, monkeypatch, sql):
     con = _locked_conn(tmp_path, monkeypatch)
@@ -208,10 +214,15 @@ def test_lock_down_refuses_local_access(tmp_path, monkeypatch, sql):
 
 
 def test_lock_down_still_spills(tmp_path, monkeypatch):
-    con = _locked_conn(tmp_path, monkeypatch)
+    monkeypatch.setenv("DUCKDB_TEMP_ROOT", str(tmp_path))
+    con = _duckdb.connect(":memory:")
+    con.sql(disable_persistent_secrets_sql())
     con.sql("SET memory_limit='200MB'")
     con.sql("SET threads=2")
     con.sql("SET preserve_insertion_order=false")
+    for stmt in spill_sql():
+        con.sql(stmt)
+    lock_down(con)
     n = con.sql("SELECT count(*) FROM (SELECT i % 3000000 AS k, sum(i) FROM range(20000000) t(i) GROUP BY k)").fetchone()[0]
     assert n == 3000000
 
@@ -228,12 +239,22 @@ def test_lock_down_allows_extra_local_dir(tmp_path, monkeypatch):
     assert (out / "a.csv").exists()
 
 
-@_pytest.mark.parametrize("raw,expected", [
-    ("SET THREADS=100; SET temp_directory='/tmp'; LOAD h3; SELECT 1",
-     "SET THREADS=100; LOAD h3; SELECT 1"),
-    ("INSTALL h3 FROM community; INSTALL httpfs;\nSELECT 1", "SELECT 1"),
-    ("set temp_directory = '/tmp'", ""),
-    ("SELECT 'SET temp_directory=''/tmp''' AS s", "SELECT 'SET temp_directory=''/tmp''' AS s"),
-])
-def test_strip_noop_statements(raw, expected):
-    assert strip_noop_statements(raw).strip() == expected
+def test_lock_down_keeps_loaded_extensions_usable(tmp_path, monkeypatch):
+    """LOAD of an already-loaded extension and its functions still work."""
+    monkeypatch.setenv("DUCKDB_TEMP_ROOT", str(tmp_path))
+    con = _duckdb.connect(":memory:")
+    con.sql(disable_persistent_secrets_sql())
+    con.sql("LOAD h3")
+    for stmt in spill_sql():
+        con.sql(stmt)
+    lock_down(con)
+    con.sql("LOAD h3")
+    assert con.sql("SELECT h3_latlng_to_cell(37.8, -122.3, 6)").fetchone()[0] > 0
+    assert con.sql("SELECT current_setting('lock_configuration')").fetchone()[0] is True
+
+
+def test_locked_hint_only_for_locked_setup_errors():
+    assert locked_hint('Invalid Input Error: Cannot change configuration option "threads" - the configuration has been locked')
+    assert locked_hint('Permission Error: Cannot access directory "/home/app/.duckdb/extensions/v1.5.4" - file system operations are disabled by configuration')
+    assert not locked_hint('Permission Error: Cannot access file "/etc/hostname" - file system operations are disabled by configuration')
+    assert not locked_hint("Catalog Error: Table with name foo does not exist!")

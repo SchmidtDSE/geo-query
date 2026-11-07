@@ -664,8 +664,11 @@ class TestBuildTileConnection:
             # Proxy: LOAD must have succeeded if these functions are callable.
             con.sql("SELECT h3_latlng_to_cell(37.8, -122.3, 5)").fetchone()
             con.sql("SELECT ST_Point(0, 0)").fetchone()
-            # httpfs loaded — confirm by presence of its config.
-            con.sql("SELECT current_setting('s3_region')").fetchone()
+            # httpfs loaded — confirm by presence of its settings. (With
+            # autoload off, current_setting('s3_region') fails even when
+            # httpfs is loaded, so read the settings table instead.)
+            n = con.sql("SELECT count(*) FROM duckdb_settings() WHERE name = 's3_region'").fetchone()[0]
+            assert n == 1
         finally:
             con.close()
 

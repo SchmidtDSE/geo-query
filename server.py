@@ -234,7 +234,7 @@ from dbconfig import (
     memory_limit_sql,
     disable_persistent_secrets_sql,
     lock_down,
-    strip_noop_statements,
+    locked_hint,
     spill_sql,
 )
 
@@ -473,7 +473,7 @@ def query(sql_query: str, s3_key: str = None, s3_secret: str = None, s3_endpoint
     print(f"🔍 Executing [{CALLER.get()}]: {sql_query}", file=sys.stderr)
     try:
         with get_isolated_db(s3_key=s3_key, s3_secret=s3_secret, s3_endpoint=s3_endpoint, s3_scope=s3_scope, s3_region=s3_region, s3_url_style=s3_url_style) as db:
-            result = db.sql(strip_noop_statements(sql_query))
+            result = db.sql(sql_query)
             if result is None: return "Command executed successfully."
 
             # Drop geometry columns — GEOMETRY('OGC:CRS84') crashes pandas conversion
@@ -566,7 +566,8 @@ def query(sql_query: str, s3_key: str = None, s3_secret: str = None, s3_endpoint
             return md
 
     except Exception as e:
-        return f"SQL Error: {str(e)}"
+        hint = locked_hint(str(e))
+        return f"SQL Error: {str(e)}" + (f"\n\n{hint}" if hint else "")
 
 query.__doc__ = f"""
 Executes optimized DuckDB SQL against S3 parquet files.
