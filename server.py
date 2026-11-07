@@ -1306,6 +1306,12 @@ if __name__ == "__main__":
     app.add_route("/version", _version, methods=["GET"])
 
     _tokens = _auth_tokens()
+    if os.environ.get("MCP_AUTH_TOKENS_DIR", "").strip() and not _MCP_AUTH_TOKENS:
+        # Fail closed: a configured but empty or unreadable token directory must
+        # not start an unauthenticated server.
+        print("💀 MCP_AUTH_TOKENS_DIR is set but no tokens were loaded — refusing "
+              "to start without auth.", file=sys.stderr)
+        sys.exit(1)
     if _tokens:
         app.add_middleware(_BearerAuthMiddleware)
         print(f"🔒 Auth enabled: {len(_tokens)} token(s) ({', '.join(sorted(_tokens))})"

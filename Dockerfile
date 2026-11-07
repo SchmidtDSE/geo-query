@@ -14,9 +14,16 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Pre-install DuckDB extensions so pods start offline-capable.
-# Uses the default extension directory (~/.duckdb/extensions/) which the runtime
-# will find automatically since the container runs as root.
+# Run as an unprivileged user (NRP incident, 2026-11-06). Nothing here needs
+# root: the server listens on 8000 and writes only spill files under /tmp. The
+# uid is numeric so Kubernetes can check runAsNonRoot.
+RUN useradd --system --uid 10001 --user-group --create-home --home-dir /home/app app
+ENV HOME=/home/app PYTHONDONTWRITEBYTECODE=1
+USER 10001
+
+# Pre-install DuckDB extensions so pods start offline-capable. Installed as the
+# app user, so they land in its default extension directory
+# (/home/app/.duckdb/extensions/) where the runtime finds them.
 RUN python -c "import duckdb; c = duckdb.connect(); c.sql('INSTALL httpfs; INSTALL spatial; INSTALL h3 FROM community')"
 
 # Application code last, so a code change rebuilds only this cheap layer.

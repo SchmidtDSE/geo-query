@@ -16,11 +16,23 @@ spec:
       # The server never calls the Kubernetes API; a mounted token was readable
       # through DuckDB in the 2026-11-06 incident.
       automountServiceAccountToken: false
+      # Non-root, matching the image's app user (uid 10001). fsGroup makes the
+      # mounted token files readable by the app's group.
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
       volumes:
       - name: mcp-tokens
         secret:
           secretName: duckdb-mcp-tokens
-          defaultMode: 0400
+          defaultMode: 0440
+      # Spill space: the root filesystem is read-only.
+      - name: tmp
+        emptyDir: {}
       affinity:
         nodeAffinity:
           requiredDuringSchedulingIgnoredDuringExecution:
@@ -94,6 +106,13 @@ spec:
         - name: mcp-tokens
           mountPath: /etc/mcp-tokens
           readOnly: true
+        - name: tmp
+          mountPath: /tmp
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop: ["ALL"]
         resources:
           # Requests intentionally kept small (≤2 GiB memory, ≤1 CPU) to land in
           # NRP's "Ignored" bucket for utilization violations. Limits stay high so
