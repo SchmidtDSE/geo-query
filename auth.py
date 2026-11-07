@@ -31,8 +31,12 @@ def load_tokens(tokens_dir: str = "", single: str = "") -> dict[str, str]:
                 path = os.path.join(tokens_dir, name)
                 if name.startswith(".") or not os.path.isfile(path):
                     continue
-                with open(path) as f:
-                    token = f.read().strip()
+                try:
+                    with open(path) as f:
+                        token = f.read().strip()
+                except OSError as e:
+                    print(f"⚠️ MCP token {name!r} unreadable: {e.strerror}", file=sys.stderr)
+                    continue
                 if token:
                     tokens[name] = token
     single = (single or "").strip()

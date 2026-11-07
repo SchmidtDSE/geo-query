@@ -38,3 +38,11 @@ def test_match_token_names_the_caller():
     assert match_token("tok-x", tokens) is None
     assert match_token("", tokens) is None
     assert match_token("", {"x": ""}) is None
+
+
+def test_load_tokens_skips_unreadable_file(tmp_path):
+    d = _secret_dir(tmp_path, {"ok": "tok-ok", "locked": "tok-locked"})
+    os.chmod(os.path.realpath(os.path.join(d, "locked")), 0)
+    if os.access(os.path.join(d, "locked"), os.R_OK):  # running as root
+        return
+    assert load_tokens(d) == {"ok": "tok-ok"}
