@@ -16,6 +16,11 @@ spec:
       # The server never calls the Kubernetes API; a mounted token was readable
       # through DuckDB in the 2026-11-06 incident.
       automountServiceAccountToken: false
+      volumes:
+      - name: mcp-tokens
+        secret:
+          secretName: duckdb-mcp-tokens
+          defaultMode: 0400
       affinity:
         nodeAffinity:
           requiredDuringSchedulingIgnoredDuringExecution:
@@ -42,14 +47,13 @@ spec:
           value: "https://s3-west.nrp-nautilus.io/public-data/stac/catalog.json"
         - name: MCP_PUBLIC_BASE_URL
           value: "https://duckdb-mcp.nrp-nautilus.io"
-        # Bearer-token auth (#43): every route except /healthz and /version needs
-        # `Authorization: Bearer <token>`. The token lives only in the
-        # duckdb-mcp-auth Secret; apps add it server-side in their nginx.
-        - name: MCP_AUTH_TOKEN
-          valueFrom:
-            secretKeyRef:
-              name: duckdb-mcp-auth
-              key: MCP_AUTH_TOKEN
+        # Bearer-token auth (#43, #454): every route except /healthz and /version
+        # (and public /tiles below) needs `Authorization: Bearer <token>`. One
+        # token per app namespace, from the duckdb-mcp-tokens Secret mounted
+        # below: each key names the namespace, so one can be revoked alone. Apps
+        # add their token server-side in their nginx.
+        - name: MCP_AUTH_TOKENS_DIR
+          value: /etc/mcp-tokens
         # Hex tiles stay public: their data is in the public-output bucket.
         - name: MCP_AUTH_PUBLIC_TILES
           value: "true"
@@ -70,6 +74,10 @@ spec:
             resourceFieldRef:
               containerName: server
               resource: limits.ephemeral-storage
+        volumeMounts:
+        - name: mcp-tokens
+          mountPath: /etc/mcp-tokens
+          readOnly: true
         resources:
           # Requests intentionally kept small (≤2 GiB memory, ≤1 CPU) to land in
           # NRP's "Ignored" bucket for utilization violations. Limits stay high so

@@ -1050,6 +1050,25 @@ class TestHealthz:
         finally:
             server._MCP_AUTH_TOKEN = original
 
+    def test_named_tokens_each_authorise_and_name_the_caller(self, monkeypatch):
+        """Every named token opens /mcp; a revoked or unknown one does not (#454).
+        The middleware exposes the matched name to the request via CALLER."""
+        import server
+        from auth import CALLER
+        from starlette.responses import PlainTextResponse
+        from starlette.testclient import TestClient
+        monkeypatch.setattr(server, "_MCP_AUTH_TOKEN", "")
+        monkeypatch.setattr(server, "_MCP_AUTH_TOKENS", {"biodiversity": "tok-b", "schmidtdse": "tok-s"})
+        app = self._build_app(with_auth_middleware=True)
+        app.add_route("/whoami", lambda r: PlainTextResponse(CALLER.get()), methods=["GET"])
+        client = TestClient(app)
+        assert client.get("/whoami", headers={"Authorization": "Bearer tok-b"}).text == "biodiversity"
+        assert client.get("/whoami", headers={"Authorization": "Bearer tok-s"}).text == "schmidtdse"
+        assert client.get("/whoami", headers={"Authorization": "Bearer tok-x"}).status_code == 401
+        assert client.get("/whoami").status_code == 401
+        monkeypatch.setattr(server, "_MCP_AUTH_TOKENS", {"biodiversity": "tok-b"})
+        assert client.get("/whoami", headers={"Authorization": "Bearer tok-s"}).status_code == 401
+
     @pytest.mark.parametrize("public_tiles,expected", [(False, 401), (True, 404)])
     def test_tiles_gated_unless_public_tiles(self, monkeypatch, public_tiles, expected):
         """/tiles needs the token by default (private replicas serve private tiles,
