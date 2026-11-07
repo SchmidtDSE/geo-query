@@ -1,4 +1,4 @@
-import hmac
+from auth import CALLER, load_tokens, match_token
 import os
 import re
 import socket
@@ -470,7 +470,7 @@ def analyst_persona() -> str:
 # -------------------------------------------------------------------------
 def query(sql_query: str, s3_key: str = None, s3_secret: str = None, s3_endpoint: str = None, s3_scope: str = None, s3_region: str = None, s3_url_style: str = None) -> str:
     """Placeholder (overwritten below)."""
-    print(f"🔍 Executing: {sql_query}", file=sys.stderr)
+    print(f"🔍 Executing [{CALLER.get()}]: {sql_query}", file=sys.stderr)
     try:
         with get_isolated_db(s3_key=s3_key, s3_secret=s3_secret, s3_endpoint=s3_endpoint, s3_scope=s3_scope, s3_region=s3_region, s3_url_style=s3_url_style) as db:
             result = db.sql(strip_noop_statements(sql_query))
@@ -1187,7 +1187,19 @@ def mount_tiles(app):
 # -------------------------------------------------------------------------
 # 9. OPTIONAL BEARER TOKEN AUTH
 # -------------------------------------------------------------------------
+# Named tokens, one per caller (#454): MCP_AUTH_TOKENS_DIR holds one file per
+# token, named for the caller (a mounted Secret). MCP_AUTH_TOKEN is the older
+# single token, kept for deployments that still set it; it is named "default".
 _MCP_AUTH_TOKEN = os.environ.get("MCP_AUTH_TOKEN", "").strip()
+_MCP_AUTH_TOKENS = load_tokens(os.environ.get("MCP_AUTH_TOKENS_DIR", "").strip())
+
+
+def _auth_tokens() -> dict:
+    tokens = dict(_MCP_AUTH_TOKENS)
+    if _MCP_AUTH_TOKEN and "default" not in tokens:
+        tokens["default"] = _MCP_AUTH_TOKEN
+    return tokens
+
 # Public deployments serve hex tiles without the token: the pyramids live in the
 # anonymously readable public-output bucket, and browsers, GitHub Pages apps and
 # exported reports fetch tile URLs directly. Off by default, because a private
@@ -1204,9 +1216,14 @@ class _BearerAuthMiddleware(BaseHTTPMiddleware):
             return await call_next(request)
         auth = request.headers.get("Authorization", "")
         supplied = auth[len("Bearer "):] if auth.startswith("Bearer ") else ""
-        if not hmac.compare_digest(supplied.encode(), _MCP_AUTH_TOKEN.encode()):
+        caller = match_token(supplied, _auth_tokens())
+        if caller is None:
             return JSONResponse({"error": "Unauthorized"}, status_code=401)
-        return await call_next(request)
+        reset = CALLER.set(caller)
+        try:
+            return await call_next(request)
+        finally:
+            CALLER.reset(reset)
 
 
 async def _healthz(_request):
@@ -1288,12 +1305,13 @@ if __name__ == "__main__":
     app.add_route("/healthz", _healthz, methods=["GET"])
     app.add_route("/version", _version, methods=["GET"])
 
-    if _MCP_AUTH_TOKEN:
+    _tokens = _auth_tokens()
+    if _tokens:
         app.add_middleware(_BearerAuthMiddleware)
-        print("🔒 Auth enabled (MCP_AUTH_TOKEN is set)"
+        print(f"🔒 Auth enabled: {len(_tokens)} token(s) ({', '.join(sorted(_tokens))})"
               + ("; /tiles is public" if _PUBLIC_TILES else ""), file=sys.stderr)
     else:
-        print("🔓 Auth disabled (MCP_AUTH_TOKEN not set)", file=sys.stderr)
+        print("🔓 Auth disabled (no MCP_AUTH_TOKENS_DIR or MCP_AUTH_TOKEN)", file=sys.stderr)
 
     print("🚀 Starting DuckDB MCP Server...", file=sys.stderr)
     print(f"📂 STAC catalog: {STAC_CATALOG_URL}", file=sys.stderr)
