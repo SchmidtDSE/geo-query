@@ -224,6 +224,7 @@ TOOL_INJECTED_CONTEXT = f"""
 # -------------------------------------------------------------------------
 from s3config import (
     default_s3_secret_sql,
+    check_client_endpoint,
     infer_use_ssl,
     source_secret_sql,
     sql_quote as _sql_quote,
@@ -336,6 +337,7 @@ def get_isolated_db(s3_key: str = None, s3_secret: str = None, s3_endpoint: str 
         has_client = credentialed or bool(s3_endpoint)
         if has_client:
             endpoint = s3_endpoint or "s3-west.nrp-nautilus.io"
+            check_client_endpoint(endpoint)
             key = s3_key if credentialed else ""
             secret = s3_secret if credentialed else ""
             use_ssl = infer_use_ssl(endpoint)

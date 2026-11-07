@@ -214,6 +214,44 @@ def route_hint(href: str) -> dict | None:
     }
 
 
+# Hosts a caller may name as `s3_endpoint` on the `query` tool. The endpoint
+# decides where an s3:// read actually goes, so an unchecked one would let a
+# caller point the server at any host it can reach, including in-cluster
+# services. Exact host names only: no scheme, port or path.
+_CLIENT_ENDPOINTS = (
+    "s3-west.nrp-nautilus.io",    # NRP Ceph, external; the default for caller keys
+    "minio.carlboettiger.info",   # lab MinIO: the mirror and private buckets (tpl-internal)
+)
+_AWS_S3_HOST = re.compile(r"s3(?:[.-][a-z0-9-]+)?\.amazonaws\.com")
+
+
+def allowed_client_endpoints() -> set[str]:
+    """Exact hosts accepted as `s3_endpoint`: the built-ins above, the deployment
+    default, every registry source's secret endpoint, and S3_ALLOWED_ENDPOINTS
+    (comma-separated). Standard AWS S3 hosts are accepted separately."""
+    hosts = {h.lower() for h in _CLIENT_ENDPOINTS}
+    hosts.add(default_endpoint().lower())
+    for src in get_sources():
+        endpoint = (src.get("secret") or {}).get("endpoint")
+        if endpoint:
+            hosts.add(endpoint.strip().lower())
+    extra = os.environ.get("S3_ALLOWED_ENDPOINTS", "")
+    hosts.update(h.strip().lower() for h in extra.split(",") if h.strip())
+    return hosts
+
+
+def check_client_endpoint(endpoint: str) -> None:
+    """Raise ValueError unless `endpoint` is an S3 host this server accepts."""
+    host = (endpoint or "").strip().lower()
+    if host in allowed_client_endpoints() or _AWS_S3_HOST.fullmatch(host):
+        return
+    raise ValueError(
+        f"s3_endpoint {endpoint!r} is not an S3 endpoint this server accepts. "
+        f"Use a bare host name such as s3-west.nrp-nautilus.io; ask the server's "
+        f"operators to add another (S3_ALLOWED_ENDPOINTS)."
+    )
+
+
 def _secret_identifier(name: str) -> str:
     """Sanitize a registry name into a DuckDB identifier for CREATE SECRET."""
     ident = re.sub(r"[^A-Za-z0-9_]", "_", name)

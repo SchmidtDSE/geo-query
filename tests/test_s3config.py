@@ -165,3 +165,34 @@ class TestRouteHint:
     def test_directory_key_preserves_trailing_slash(self):
         hint = s3config.route_hint("https://minio.other.edu/mirror-x/data/")
         assert hint["path"] == "s3://mirror-x/data/"
+
+
+# --- s3_endpoint allow-list -------------------------------------------------
+import pytest as _pytest
+from s3config import allowed_client_endpoints, check_client_endpoint
+
+
+@_pytest.mark.parametrize("host", [
+    "s3-west.nrp-nautilus.io", "minio.carlboettiger.info", "rook-ceph-rgw-nautiluss3.rook",
+    "s3.us-west-2.amazonaws.com", "s3.amazonaws.com", "S3-West.NRP-Nautilus.io",
+])
+def test_known_endpoints_accepted(host):
+    check_client_endpoint(host)
+
+
+@_pytest.mark.parametrize("host", [
+    "open-llm-proxy.biodiversity.svc.cluster.local", "10.96.0.1", "localhost",
+    "s3-west.nrp-nautilus.io:8080", "https://s3-west.nrp-nautilus.io",
+    "s3-west.nrp-nautilus.io/x", "evil.amazonaws.com.attacker.io", "kubernetes.default", "",
+])
+def test_other_endpoints_rejected(host):
+    with _pytest.raises(ValueError):
+        check_client_endpoint(host)
+
+
+def test_allowed_endpoints_extend_from_env_and_registry(monkeypatch):
+    monkeypatch.setenv("S3_ALLOWED_ENDPOINTS", "minio.example.org, other.example.edu")
+    monkeypatch.setenv("S3_SOURCES", '[{"name": "x", "s3_prefix": "s3://x/", "secret": {"endpoint": "reg.example.net", "scope": "s3://x"}}]')
+    hosts = allowed_client_endpoints()
+    assert {"minio.example.org", "other.example.edu", "reg.example.net"} <= hosts
+    check_client_endpoint("reg.example.net")
