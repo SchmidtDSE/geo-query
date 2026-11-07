@@ -141,3 +141,65 @@ def spill_sql() -> list[str]:
     if cap:
         stmts.append(f"SET max_temp_directory_size='{sql_quote(cap)}'")
     return stmts
+
+
+# ---------------------------------------------------------------------------
+# Filesystem lockdown (NRP incident, 2026-11-06)
+# ---------------------------------------------------------------------------
+# Every connection runs caller-supplied SQL, and DuckDB can read any local file
+# by default (read_text, read_blob, glob, ATTACH, COPY ... TO). On 2026-11-06
+# that let someone read the pod's Kubernetes service-account token through the
+# public `query` tool. Each connection is therefore locked to remote storage
+# plus its own spill directory before any caller SQL runs.
+#
+# `enable_external_access=false` cannot be switched back on, and
+# `allowed_directories` cannot be changed after it, so caller SQL cannot undo
+# the lock. Spilling to the connection's own temp_directory keeps working.
+
+# Remote prefixes caller SQL may read and write. Plain http:// is deliberately
+# absent: it would reach unencrypted in-cluster services.
+_REMOTE_PREFIXES = ("s3://", "https://")
+
+
+def disable_persistent_secrets_sql() -> str:
+    """Run first on a fresh connection, before any CREATE SECRET.
+
+    Without it the secret manager lazily opens ~/.duckdb/stored_secrets on the
+    first remote read, which the lockdown then refuses.
+    """
+    return "SET allow_persistent_secrets=false"
+
+
+def lock_down(conn, extra_dirs=()) -> None:
+    """Restrict `conn` to remote storage plus its own spill directory.
+
+    Call last, after extensions are loaded and secrets are created: once locked,
+    LOAD of a new extension, INSTALL, SET temp_directory and any local path fail.
+    `extra_dirs` admits local directories the server itself writes (a local
+    TILE_BUCKET_BASE in tests). Raises on failure — a connection that cannot be
+    locked must not run caller SQL.
+    """
+    temp_dir = conn.sql("SELECT current_setting('temp_directory')").fetchone()[0]
+    allowed = list(_REMOTE_PREFIXES)
+    for d in (temp_dir, *extra_dirs):
+        if d and "://" not in d:
+            allowed.append(d.rstrip("/") + "/")
+    conn.sql("SET allowed_directories=[" + ", ".join(f"'{sql_quote(a)}'" for a in allowed) + "]")
+    conn.sql("SET enable_external_access=false")
+
+
+# Statements models copy from older setup guidance that are no-ops on this
+# server (extensions are pre-installed in the image, and each connection already
+# has a private spill directory) but are refused once a connection is locked.
+_NOOP_STMT = re.compile(
+    r"(?:(?<=;)|^)\s*(?:INSTALL\s+\w+(?:\s+FROM\s+\w+)?|SET\s+temp_directory\s*(?:=|TO)\s*'[^']*')\s*(?:;|$)",
+    re.IGNORECASE,
+)
+
+
+def strip_noop_statements(sql: str) -> str:
+    """Drop INSTALL and SET temp_directory statements from caller SQL."""
+    prev = None
+    while prev != sql:
+        prev, sql = sql, _NOOP_STMT.sub("", sql)
+    return sql.strip()

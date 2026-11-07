@@ -232,6 +232,9 @@ from dbconfig import (
     duckdb_max_temp_directory_size,
     duckdb_memory_limit,
     memory_limit_sql,
+    disable_persistent_secrets_sql,
+    lock_down,
+    strip_noop_statements,
     spill_sql,
 )
 
@@ -265,6 +268,7 @@ def get_isolated_db(s3_key: str = None, s3_secret: str = None, s3_endpoint: str 
         )
     conn = duckdb.connect(database=":memory:")
     try:
+        conn.sql(disable_persistent_secrets_sql())
         for stmt in (s.strip() for s in SETUP_SQL.split(";") if s.strip()):
             try:
                 conn.sql(stmt)
@@ -366,6 +370,8 @@ def get_isolated_db(s3_key: str = None, s3_secret: str = None, s3_endpoint: str 
                 conn.sql(default_s3_secret_sql())
             except Exception as e:
                 print(f"⚠️ Default S3 secret setup skipped: {e}", file=sys.stderr)
+        # Last: no local file access for caller SQL (NRP incident 2026-11-06).
+        lock_down(conn)
         yield conn
     finally:
         conn.close()
@@ -467,7 +473,7 @@ def query(sql_query: str, s3_key: str = None, s3_secret: str = None, s3_endpoint
     print(f"🔍 Executing: {sql_query}", file=sys.stderr)
     try:
         with get_isolated_db(s3_key=s3_key, s3_secret=s3_secret, s3_endpoint=s3_endpoint, s3_scope=s3_scope, s3_region=s3_region, s3_url_style=s3_url_style) as db:
-            result = db.sql(sql_query)
+            result = db.sql(strip_noop_statements(sql_query))
             if result is None: return "Command executed successfully."
 
             # Drop geometry columns — GEOMETRY('OGC:CRS84') crashes pandas conversion

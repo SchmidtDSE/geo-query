@@ -917,6 +917,8 @@ class TestTileRouteMounted:
         from tiles.db import build_tile_connection
         from tiles.pyramid import write_lock, read_lock
         monkeypatch.setattr(server, "_LOCK_HEARTBEAT_SECONDS", 0.05)
+        # Tile connections may only write locally under TILE_BUCKET_BASE (lockdown).
+        monkeypatch.setenv("TILE_BUCKET_BASE", str(tmp_path))
         uri = str(tmp_path) + "/"
         con = build_tile_connection(threads=1)
         try:
