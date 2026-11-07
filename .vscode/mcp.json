@@ -1,7 +1,18 @@
 {
+	"inputs": [
+		{
+			"type": "promptString",
+			"id": "duckdb-mcp-token",
+			"description": "Token for duckdb-mcp.nrp-nautilus.io",
+			"password": true
+		}
+	],
 	"servers": {
 		"duckdb-geo": {
-			"url": "https://duckdb-mcp.nrp-nautilus.io/mcp"
+			"url": "https://duckdb-mcp.nrp-nautilus.io/mcp",
+			"headers": {
+				"Authorization": "Bearer ${input:duckdb-mcp-token}"
+			}
 		}
 	}
 }

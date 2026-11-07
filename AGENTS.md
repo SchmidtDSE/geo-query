@@ -72,6 +72,13 @@ The MCP server runs on the NRP Nautilus Kubernetes cluster, namespace `biodivers
 Replicas, resources, env (e.g. `STAC_CATALOG_URL`) and ingress timeouts live in `k8s/`;
 read them there, or from the live cluster, rather than restating them here.
 
+**Auth and file access** are described in README → *Security*: named bearer tokens
+from the `duckdb-mcp-tokens` Secret, and `dbconfig.lock_down()` on every DuckDB
+connection that runs caller SQL. Never print, log or commit a token. Never loosen
+`lock_down()` (adding a local directory or `http://` to `allowed_directories`)
+without a security review: in November 2026 a public DuckDB file read leaked the
+pod's Kubernetes service-account token.
+
 ### MCP transport: stateless HTTP
 
 The server runs FastMCP in **stateless streamable-HTTP mode** (`server.py`: `FastMCP(..., stateless_http=True)`). Every `POST /mcp` is a complete, independent request/response. There is no `Mcp-Session-Id` pinning clients to a replica, no per-pod session cache, no in-memory state that survives across requests. The protocol's stateful SSE mode is **not** in use here.
