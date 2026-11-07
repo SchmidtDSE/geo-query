@@ -273,6 +273,7 @@ pytest --cov=. tests/
 - `MCP_AUTH_TOKENS_DIR` - directory of bearer tokens, one file per caller, named for it (see [Authentication](#authentication))
 - `MCP_AUTH_TOKEN` - a single bearer token, named `default`; older deployments use this
 - `MCP_AUTH_PUBLIC_TILES` - `true` serves `GET /tiles/...` without a token (default: off)
+- `S3_ALLOWED_ENDPOINTS` - extra hosts accepted as the `query` tool's `s3_endpoint`, comma-separated
 
 ### DuckDB Settings
 
@@ -369,24 +370,27 @@ An app in another namespace gets a copy of its own token there as a Secret
 `duckdb-mcp-auth` with key `MCP_AUTH_TOKEN`, which is what the app manifests
 reference.
 
-### Local file access
+### Local file access and DuckDB settings
 
-Queries can read remote data but not the server's own disk. Every DuckDB
-connection that runs caller SQL (the `query` tool, and the tile connections
-behind `register_hex_tiles`) is locked before that SQL runs
-(`dbconfig.lock_down()`):
+Queries can read remote data but not the server's own disk, and cannot change
+how DuckDB is configured. Every connection that runs caller SQL (the `query`
+tool, and the tile connections behind `register_hex_tiles`) is set up by the
+server and then locked with DuckDB's own settings (`dbconfig.lock_down()`):
 
 - `allowed_directories` admits `s3://`, `https://` and the connection's own spill
   directory under `/tmp`, then `enable_external_access=false` turns everything
   else off. Local reads and writes, `glob`, `ATTACH`, `INSTALL` and plain
-  `http://` (in-cluster services) are refused.
-- DuckDB will not re-enable external access or change `allowed_directories`
-  once locked, so caller SQL cannot undo it.
+  `http://` paths are refused. `s3://` paths still reach NRP Ceph's internal
+  endpoint over http, because the S3 secret, not the path, picks the endpoint.
+- Extension autoload, autoinstall and community extensions are off, so no
+  extension code runs beyond what the server loaded.
+- `lock_configuration=true` comes last: `SET`, `RESET` and `PRAGMA` all fail,
+  so caller SQL can neither undo the lock nor change `memory_limit` or any other
+  setting. The server applies every setting itself; SQL needs no setup lines.
 - Persistent secrets are off, so DuckDB never opens `~/.duckdb/stored_secrets`.
-- `INSTALL …` and `SET temp_directory=…` statements are stripped from `query`
-  SQL. They are no-ops here, since extensions ship in the image and each
-  connection already has a private spill directory, but a locked connection
-  would refuse them.
+- The `query` tool's `s3_endpoint` must be a known S3 host (NRP Ceph, the lab
+  MinIO, registry sources, AWS S3, or `S3_ALLOWED_ENDPOINTS`), since it decides
+  where `s3://` reads go.
 - Tile names in `/tiles/...` URLs must be 16-hex content hashes before they
   reach any SQL.
 
