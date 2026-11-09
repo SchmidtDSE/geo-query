@@ -1,6 +1,6 @@
 # Private Data Access
 
-The server supports private STAC catalogs and private S3 buckets. Query credentials are supplied per-call and scoped to that request only — they are never logged, cached, or shared between clients. Catalog scope is different: it is a property of the deployment, not an argument.
+The server supports private STAC catalogs and private S3 buckets. Query credentials are supplied per call by the deployment, never by the model, and scoped to that request only. They are never logged, cached, or shared between clients. Catalog scope is different: it is a property of the deployment, not an argument.
 
 ## Private STAC catalog
 
@@ -41,7 +41,9 @@ If you use oauth2-proxy for browser access, add a parallel nginx `auth_request` 
 
 ## Private S3 data
 
-Pass S3 credentials directly to the `query` tool:
+Credentials never come from the model. The model writes every tool argument, so a key it passed would also sit in the conversation sent to the language model. `s3_key` and `s3_secret` are therefore left out of the `query` schema and description the model sees, and the server still accepts them from a proxy between the app and the server. In a private app, a server-side proxy injects the deployment's keys into `tools/call` for SQL that names its private bucket (tpl-internal's `mcp-credential-proxy`), or a private replica reads the bucket with credentials from its own `S3_SOURCES`. Users who bring their own keys to their own bucket can enter them in the browser with [geo-query-wasm](https://github.com/SchmidtDSE/geo-query-wasm), which also keeps them from the model.
+
+A call with keys, as the proxy sends it:
 
 ```json
 {
@@ -78,6 +80,7 @@ Use `s3_scope` when a query reads from both a private and the public S3 endpoint
 
 | Concern | How it is handled |
 |---|---|
+| Keys reaching the model | `s3_key` and `s3_secret` are not in the schema or description the model sees. The SQL cannot call `duckdb_secrets()` or `which_secret()`, which would show the key ID. Key values are replaced by `[REDACTED]` in results and error text. |
 | Credential bleed between clients | Each request uses a separate `duckdb.connect(":memory:")` — secrets are connection-scoped and destroyed on close |
 | Credentials in server logs | `CREATE SECRET` statements are constructed internally and never written to stderr |
 | Credentials in transit | All traffic is TLS-terminated at the ingress |
@@ -85,4 +88,4 @@ Use `s3_scope` when a query reads from both a private and the public S3 endpoint
 
 ## Deploying private apps without a separate server
 
-Private geo-agent apps can share the public MCP server endpoint and pass credentials per-call. This avoids maintaining a separate server deployment per app while ensuring all apps benefit from server improvements automatically.
+Private geo-agent apps can share the public MCP server endpoint, with a server-side proxy adding their credentials to each call. This avoids maintaining a separate server deployment per app while ensuring all apps benefit from server improvements automatically.
