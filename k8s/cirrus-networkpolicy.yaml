@@ -1,0 +1,57 @@
+# Network containment for duckdb-mcp on cirrus (k3s, kube-router NetworkPolicy).
+#
+# The server runs caller-supplied SQL, so it must not become an SSRF proxy.
+# Egress is limited to the in-cluster MinIO S3 API and cluster DNS; nothing
+# else — not the internet, not other in-cluster services, not the public
+# minio.carlboettiger.info host. S3_SOURCES in cirrus-deployment.yaml routes the
+# mirror's public hrefs to minio-svc so reads still work.
+#
+# Ingress is limited to Traefik (kube-system) on 8000. Kubelet probes come from
+# the node itself, which kube-router always admits.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: duckdb-mcp-containment
+  namespace: mcp
+spec:
+  podSelector:
+    matchLabels:
+      app: duckdb-mcp
+  policyTypes:
+  - Ingress
+  - Egress
+  ingress:
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: kube-system
+      podSelector:
+        matchLabels:
+          app.kubernetes.io/name: traefik
+    ports:
+    - port: 8000
+      protocol: TCP
+  egress:
+  - to:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: kube-system
+      podSelector:
+        matchLabels:
+          k8s-app: kube-dns
+    ports:
+    - port: 53
+      protocol: UDP
+    - port: 53
+      protocol: TCP
+  # MinIO S3 API only (the pod port; the console on 9090 is excluded).
+  - to:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: minio
+      podSelector:
+        matchLabels:
+          k8s-app: minio-app
+    ports:
+    - port: 9000
+      protocol: TCP
