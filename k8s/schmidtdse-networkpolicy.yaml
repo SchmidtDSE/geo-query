@@ -1,0 +1,84 @@
+# Network containment for duckdb-mcp in schmidtdse.
+#
+# The server runs caller-supplied SQL, and a caller can aim s3:// reads at any
+# host with CREATE SECRET ... ENDPOINT, so egress must be closed to everything
+# the server does not need. Without that, the pods are an SSRF proxy into the
+# cluster (the 2026-11-07 intrusion tried prometheus, etcd and 169.254.169.254).
+#
+# HOLD: the egress rules are incomplete. The server reads NRP Ceph through the
+# internal RGW (http://rook-ceph-rgw-nautiluss3.rook), and our account can't
+# read the rook Service or Endpoints to write that rule. A first try on dev
+# (namespace rook, ports 80/8080) blocked Ceph. Add NRP's rule where marked
+# below, then apply this file before the Deployment.
+#
+# Ingress: only the schmidtdse app pods that proxy /api/mcp, on 8000. JupyterHub
+# user pods share this namespace and are deliberately left out. Kubelet probes
+# come from the node and are admitted by the CNI.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: duckdb-mcp-containment
+  namespace: schmidtdse
+spec:
+  podSelector:
+    matchLabels:
+      app: duckdb-mcp
+  policyTypes:
+  - Ingress
+  - Egress
+  ingress:
+  - from:
+    - podSelector:
+        matchExpressions:
+        - key: app
+          operator: In
+          values:
+          - bosl-high-seas
+          - bosl-high-seas-private
+          - ca-wolves
+          - cacao-demo
+          - cacao-internal
+          - coasts
+          - roadless-rule
+          - tpl-ca
+          - utah-public-lands
+    ports:
+    - port: 8000
+      protocol: TCP
+  egress:
+  # Cluster DNS.
+  - to:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: kube-system
+      podSelector:
+        matchLabels:
+          k8s-app: kube-dns
+    ports:
+    - port: 53
+      protocol: UDP
+    - port: 53
+      protocol: TCP
+  # https to public addresses only: s3-west, source.coop on AWS, the STAC
+  # catalog and https:// reads in queries. Private, link-local and cluster
+  # ranges are excluded, so no in-cluster service is reachable this way.
+  - to:
+    - ipBlock:
+        cidr: 0.0.0.0/0
+        except:
+        - 10.0.0.0/8
+        - 172.16.0.0/12
+        - 192.168.0.0/16
+        - 100.64.0.0/10
+        - 169.254.0.0/16
+        - 127.0.0.0/8
+    - ipBlock:
+        cidr: ::/0
+        except:
+        - fc00::/7
+        - fe80::/10
+        - ::1/128
+    ports:
+    - port: 443
+      protocol: TCP
+  # TODO(NRP): internal RGW, plain http. Replace with the rule NRP gives us.
