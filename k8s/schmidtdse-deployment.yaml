@@ -74,9 +74,10 @@ spec:
           value: "s3-west.nrp-nautilus.io"
         - name: S3_ENDPOINT_URL
           value: "https://s3-west.nrp-nautilus.io"
-        # No public host: the server has no Ingress. Hex tile URLs from
-        # register_hex_tiles are absolute links to this base, which browsers
-        # can't reach, so hex tile layers won't load until this is settled.
+        # No public host: the server has no Ingress. Hex tile URLs come back on
+        # this internal base, and each app's nginx rewrites the prefix to its
+        # own https host in /api/mcp responses (sub_filter) and proxies /tiles/
+        # here with its own token. Changing this value breaks those rewrites.
         - name: MCP_PUBLIC_BASE_URL
           value: "http://duckdb-mcp.schmidtdse.svc.cluster.local:8000"
         # Bearer-token auth (#43, #454): every route except /healthz and /version
