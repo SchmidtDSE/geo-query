@@ -61,6 +61,15 @@ spec:
           value: "v0.9.5"
         - name: STAC_CATALOG_URL
           value: "https://s3-west.nrp-nautilus.io/public-data/stac/catalog.json"
+        # NRP Ceph through its external https endpoint, not the internal RGW
+        # (rook-ceph-rgw-nautiluss3.rook). The egress NetworkPolicy
+        # (mcp-egress-networkpolicy.yaml) allows only DNS and public https until
+        # NRP gives us a rule for internal RGW; then drop these two to return to
+        # the much faster internal endpoint.
+        - name: S3_DEFAULT_ENDPOINT
+          value: "s3-west.nrp-nautilus.io"
+        - name: S3_ENDPOINT_URL
+          value: "https://s3-west.nrp-nautilus.io"
         - name: MCP_PUBLIC_BASE_URL
           value: "https://duckdb-mcp.nrp-nautilus.io"
         # Bearer-token auth (#43, #454): every route except /healthz and /version

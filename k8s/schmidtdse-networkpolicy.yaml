@@ -5,11 +5,11 @@
 # the server does not need. Without that, the pods are an SSRF proxy into the
 # cluster (the 2026-11-07 intrusion tried prometheus, etcd and 169.254.169.254).
 #
-# HOLD: the egress rules are incomplete. The server reads NRP Ceph through the
-# internal RGW (http://rook-ceph-rgw-nautiluss3.rook), and our account can't
-# read the rook Service or Endpoints to write that rule. A first try on dev
-# (namespace rook, ports 80/8080) blocked Ceph. Add NRP's rule where marked
-# below, then apply this file before the Deployment.
+# Egress: DNS and https to public addresses only. NRP Ceph is read through its
+# external endpoint (s3-west.nrp-nautilus.io; see S3_DEFAULT_ENDPOINT in
+# schmidtdse-deployment.yaml), because our account can't read the rook Service
+# to write a rule for the internal RGW. When NRP gives us that rule, add it
+# here and drop the two endpoint env vars.
 #
 # Ingress: only the schmidtdse app pods that proxy /api/mcp, on 8000. JupyterHub
 # user pods share this namespace and are deliberately left out. Kubelet probes
@@ -81,4 +81,3 @@ spec:
     ports:
     - port: 443
       protocol: TCP
-  # TODO(NRP): internal RGW, plain http. Replace with the rule NRP gives us.

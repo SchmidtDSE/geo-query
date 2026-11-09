@@ -1,0 +1,117 @@
+# Egress containment for the DuckDB MCP servers in biodiversity.
+#
+# These servers run caller-supplied SQL, and a caller can aim s3:// reads at any
+# host with CREATE SECRET ... ENDPOINT, so without an egress rule the pods are
+# an SSRF proxy into the cluster (the 2026-11-07 intrusion tried prometheus,
+# etcd and 169.254.169.254). These policies allow DNS and https to public
+# addresses only, plus each app-catalog server's own app on port 80.
+#
+# NRP Ceph is read through its external endpoint (s3-west.nrp-nautilus.io): each
+# Deployment sets S3_DEFAULT_ENDPOINT and S3_ENDPOINT_URL to it, because our
+# account can't read the rook Service to write a rule for the internal RGW. When
+# NRP gives us that rule, add it here and drop those env vars. Switch a server's
+# endpoint before adding it here, or it loses Ceph.
+#
+# Egress only. Ingress to these pods is set by NRP's incident-mcp-deny-ingress,
+# which this file does not touch.
+#
+# Manifests of the selected servers: duckdb-mcp and dev-duckdb-mcp in this repo;
+# ca30x30-mcp in boettiger-lab/ca-30x30, wyoming-mcp in boettiger-lab/wyoming,
+# sdm-mcp in boettiger-lab/hexsdm.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: mcp-egress
+  namespace: biodiversity
+spec:
+  podSelector:
+    matchExpressions:
+    - key: app
+      operator: In
+      values:
+      - duckdb-mcp
+      - dev-duckdb-mcp
+      - ca30x30-mcp
+      - wyoming-mcp
+      - sdm-mcp
+  policyTypes:
+  - Egress
+  egress:
+  # Cluster DNS.
+  - to:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: kube-system
+      podSelector:
+        matchLabels:
+          k8s-app: kube-dns
+    ports:
+    - port: 53
+      protocol: UDP
+    - port: 53
+      protocol: TCP
+  # https to public addresses only: s3-west, source.coop on AWS, the STAC
+  # catalog, minio.carlboettiger.info and https:// reads in queries. Private,
+  # link-local and cluster ranges are excluded, so no in-cluster service is
+  # reachable this way.
+  - to:
+    - ipBlock:
+        cidr: 0.0.0.0/0
+        except:
+        - 10.0.0.0/8
+        - 172.16.0.0/12
+        - 192.168.0.0/16
+        - 100.64.0.0/10
+        - 169.254.0.0/16
+        - 127.0.0.0/8
+    - ipBlock:
+        cidr: ::/0
+        except:
+        - fc00::/7
+        - fe80::/10
+        - ::1/128
+    ports:
+    - port: 443
+      protocol: TCP
+---
+# ca30x30-mcp reads its STAC catalog from the ca-30x30 app's nginx in-cluster.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: mcp-egress-ca30x30-catalog
+  namespace: biodiversity
+spec:
+  podSelector:
+    matchLabels:
+      app: ca30x30-mcp
+  policyTypes:
+  - Egress
+  egress:
+  - to:
+    - podSelector:
+        matchLabels:
+          app: ca-30x30
+    ports:
+    - port: 80
+      protocol: TCP
+---
+# wyoming-mcp reads its STAC catalog from the wyoming app's nginx in-cluster.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: mcp-egress-wyoming-catalog
+  namespace: biodiversity
+spec:
+  podSelector:
+    matchLabels:
+      app: wyoming-mcp
+  policyTypes:
+  - Egress
+  egress:
+  - to:
+    - podSelector:
+        matchLabels:
+          app: wyoming
+    ports:
+    - port: 80
+      protocol: TCP

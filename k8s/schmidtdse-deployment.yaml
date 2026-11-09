@@ -1,9 +1,7 @@
 # duckdb-mcp for the schmidtdse apps: a copy of prod (biodiversity) with its own
 # tokens, reachable only inside the cluster. See schmidtdse-networkpolicy.yaml.
 #
-# HOLD: do not apply until the egress rules in schmidtdse-networkpolicy.yaml
-# include NRP's rule for internal RGW. Deploy all three schmidtdse-*.yaml files
-# together, with the policy first.
+# Apply schmidtdse-networkpolicy.yaml before this file.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -67,6 +65,15 @@ spec:
           value: "v0.9.5"
         - name: STAC_CATALOG_URL
           value: "https://s3-west.nrp-nautilus.io/public-data/stac/catalog.json"
+        # NRP Ceph through its external https endpoint, not the internal RGW
+        # (rook-ceph-rgw-nautiluss3.rook). The egress NetworkPolicy
+        # (schmidtdse-networkpolicy.yaml) allows only DNS and public https until
+        # NRP gives us a rule for internal RGW; then drop these two to return to
+        # the much faster internal endpoint.
+        - name: S3_DEFAULT_ENDPOINT
+          value: "s3-west.nrp-nautilus.io"
+        - name: S3_ENDPOINT_URL
+          value: "https://s3-west.nrp-nautilus.io"
         # No public host: the server has no Ingress. Hex tile URLs from
         # register_hex_tiles are absolute links to this base, which browsers
         # can't reach, so hex tile layers won't load until this is settled.
