@@ -470,9 +470,24 @@ def analyst_persona() -> str:
 # -------------------------------------------------------------------------
 # 8. TOOL DEFINITION — SQL Query
 # -------------------------------------------------------------------------
+SECRET_FUNCTIONS = re.compile(r"\b(duckdb_secrets|which_secret)\b", re.IGNORECASE)
+
+
+def redact_credentials(text: str, values) -> str:
+    """Replace each credential value in text with [REDACTED]."""
+    for v in values:
+        if v and len(v) >= 4:
+            text = text.replace(v, "[REDACTED]")
+    return text
+
+
 def query(sql_query: str, s3_key: str = None, s3_secret: str = None, s3_endpoint: str = None, s3_scope: str = None, s3_region: str = None, s3_url_style: str = None) -> str:
     """Placeholder (overwritten below)."""
     print(f"🔍 Executing [{CALLER.get()}]: {sql_query}", file=sys.stderr)
+    # duckdb_secrets() redacts the secret but shows the key ID, including one a
+    # proxy injected for this query. The secrets belong to the deployment.
+    if SECRET_FUNCTIONS.search(sql_query):
+        return "SQL Error: duckdb_secrets() and which_secret() are not available here: the S3 secrets belong to the deployment."
     try:
         with get_isolated_db(s3_key=s3_key, s3_secret=s3_secret, s3_endpoint=s3_endpoint, s3_scope=s3_scope, s3_region=s3_region, s3_url_style=s3_url_style) as db:
             result = db.sql(sql_query)
@@ -565,11 +580,14 @@ def query(sql_query: str, s3_key: str = None, s3_secret: str = None, s3_endpoint
                     " full result and NOT a count. The true number of matching rows is"
                     " larger; use COUNT(...) / COUNT(DISTINCT ...) / SUM(...) for totals."
                 )
-            return md
+            return redact_credentials(md, (s3_key, s3_secret))
 
     except Exception as e:
-        hint = locked_hint(str(e))
-        return f"SQL Error: {str(e)}" + (f"\n\n{hint}" if hint else "")
+        # An S3 error can repeat the request's key ID (InvalidAccessKeyId,
+        # SignatureDoesNotMatch), and this text goes back to the model.
+        msg = redact_credentials(str(e), (s3_key, s3_secret))
+        hint = locked_hint(msg)
+        return f"SQL Error: {msg}" + (f"\n\n{hint}" if hint else "")
 
 query.__doc__ = f"""
 Executes optimized DuckDB SQL against S3 parquet files.
@@ -577,13 +595,11 @@ Executes optimized DuckDB SQL against S3 parquet files.
 BEFORE writing any SQL:
 {_QUERY_DISCOVER_STEPS}
 
-For private data, pass s3_key, s3_secret, and optionally s3_endpoint and s3_scope alongside the SQL query.
+Private buckets are read with credentials the deployment supplies. Never pass s3_key or s3_secret, and never ask the user for keys.
 For an anonymous public source (e.g. a read-only mirror), pass s3_endpoint alone (no key/secret) with s3_scope — useful to read a mirror like s3://public-* from a backup endpoint when the primary is unavailable.
 Use s3_scope (e.g. 's3://private-wyoming' or 's3://public-') so DuckDB routes those paths to your endpoint rather than the server default; supply it whenever a query mixes sources.
-For a bring-your-own AWS-hosted bucket, also pass s3_region (e.g. 'us-west-2') and, if the bucket needs it, s3_url_style ('path' by default, or 'vhost'); the defaults suit Ceph/MinIO.
-WITHOUT s3_scope, your endpoint/credentials apply to EVERY s3:// path in the query and the server-default endpoint is disabled for this request — fine for a query touching only your bucket, wrong for a query mixing your bucket with catalog data. When mixing, always pass s3_scope.
-Credentials, when given, are scoped to this request only and never persisted.
-
+For an anonymous AWS-hosted bucket, also pass s3_region (e.g. 'us-west-2') and, if the bucket needs it, s3_url_style ('path' by default, or 'vhost'); the defaults suit Ceph/MinIO.
+WITHOUT s3_scope, your endpoint applies to EVERY s3:// path in the query and the server-default endpoint is disabled for this request — fine for a query touching only your bucket, wrong for a query mixing your bucket with catalog data. When mixing, always pass s3_scope.
 {TOOL_INJECTED_CONTEXT}
 """
 
@@ -629,6 +645,16 @@ async def _query_tool(
 # getting "Unknown tool" (#326).
 _query_tool.__name__ = "query"
 mcp.tool(name="query", description=query.__doc__)(_query_tool)
+
+# s3_key and s3_secret stay in the signature, so a server-side proxy can inject
+# a deployment's credentials into tools/call (tpl-internal's
+# mcp-credential-proxy does), but they are left out of the schema the model
+# sees. The model writes these arguments, so keys it passed would have been in
+# the conversation sent to the language model. Validation uses the function's
+# argument model, which still accepts them.
+MODEL_HIDDEN_ARGS = ("s3_key", "s3_secret")
+for _arg in MODEL_HIDDEN_ARGS:
+    mcp._tool_manager.get_tool("query").parameters["properties"].pop(_arg, None)
 
 # -------------------------------------------------------------------------
 # 8b. TILE ENDPOINT — dynamic MVT for H3 hex visualization (see issue #4)

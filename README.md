@@ -219,7 +219,7 @@ If every pod's imageID matches the pinned digest, prod is current and consistent
 
 - `browse_stac_catalog(catalog?)` - List available datasets from the deployment's STAC catalog (registered only when discovery is enabled; see `STAC_DISCOVERY`)
 - `get_stac_details(dataset_id, collection?)` - Get S3 paths and schema for a dataset
-- `query(sql_query, s3_key?, s3_secret?, s3_endpoint?, s3_scope?)` - Execute DuckDB SQL against S3 parquet files
+- `query(sql_query, s3_endpoint?, s3_scope?, s3_region?, s3_url_style?)` - Execute DuckDB SQL against S3 parquet files. It also accepts `s3_key` and `s3_secret` from a server-side proxy, but does not offer them to the model (see Private S3 data).
 
 ### Resources
 
@@ -302,7 +302,9 @@ The token is forwarded as `Authorization: Bearer <token>` when fetching catalog 
 
 ### Private S3 data
 
-Pass S3 credentials directly to the `query` tool. The server injects them as a scoped DuckDB secret for the duration of that query, then destroys the connection:
+Credentials never come from the model. The model writes every tool argument, so a key it passed would also sit in the conversation sent to the language model. `s3_key` and `s3_secret` are therefore left out of the `query` schema and description the model sees, and the server still accepts them from a proxy between the app and the server. In a private app, a server-side proxy injects the deployment's keys into `tools/call` for SQL that names its private bucket (tpl-internal's `mcp-credential-proxy`), or a private replica reads the bucket with credentials from its own `S3_SOURCES`. Users who bring their own keys to their own bucket can enter them in the browser with [geo-query-wasm](https://github.com/SchmidtDSE/geo-query-wasm), which also keeps them from the model.
+
+The server makes the injected keys a DuckDB secret for that query only, then destroys the connection. A call with keys, as the proxy sends it:
 
 ```json
 { "tool": "query", "arguments": {
@@ -319,6 +321,7 @@ Pass S3 credentials directly to the `query` tool. The server injects them as a s
 
 | Concern | How it is handled |
 |---|---|
+| Keys reaching the model | `s3_key` and `s3_secret` are not in the schema or description the model sees. The SQL cannot call `duckdb_secrets()` or `which_secret()`, which would show the key ID. Key values are replaced by `[REDACTED]` in results and error text. |
 | Credential bleed between clients | Each request uses a separate `duckdb.connect(":memory:")` — DuckDB secrets are connection-scoped and destroyed on close |
 | Credentials in server logs | `CREATE SECRET` statements are constructed internally and never written to stderr |
 | Credentials in transit | All traffic is TLS-terminated at the ingress |
@@ -326,7 +329,7 @@ Pass S3 credentials directly to the `query` tool. The server injects them as a s
 
 ### Deploying private apps without a separate server
 
-Rather than maintaining a forked server deployment per app, private geo-agent apps can share the public MCP server endpoint and pass their credentials per-call. This reduces idle deployments and ensures all apps benefit from server improvements automatically. Like every app, they still need a bearer token for the endpoint, held server-side (see [Authentication](#authentication)).
+Rather than maintaining a forked server deployment per app, private geo-agent apps can share the public MCP server endpoint, with a server-side proxy adding their credentials to each call. This reduces idle deployments and ensures all apps benefit from server improvements automatically. Like every app, they still need a bearer token for the endpoint, held server-side (see [Authentication](#authentication)).
 
 ## Security
 

@@ -313,7 +313,7 @@ def _extract_parquet_assets(col, compact: bool = False) -> list[str]:
                 assets.append(
                     f"    - ⚠️ non-default endpoint (derived from `{href}` assuming "
                     f"path-style S3): call `query` with s3_endpoint='{hint['endpoint']}', "
-                    f"s3_scope='{hint['scope']}' (anonymous; add s3_key/s3_secret if private)"
+                    f"s3_scope='{hint['scope']}' (anonymous; a private bucket's credentials come from the deployment)"
                 )
             # Asset-level description — carries per-asset facts (e.g. "this file has
             # duplicate rows per feature; dedup by <id>") that the model needs at

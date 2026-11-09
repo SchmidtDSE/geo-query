@@ -519,6 +519,28 @@ class TestS3Credentials:
             names = [r[0] for r in conn_with.sql("SELECT name FROM duckdb_secrets()").fetchall()]
             assert "client_s3" in names
 
+    def test_injected_credentials_accepted_by_the_served_tool(self):
+        """A server-side proxy injects s3_key/s3_secret into tools/call even
+        though the schema does not offer them; the call must still validate."""
+        from server import mcp
+        import anyio
+        out = anyio.run(mcp.call_tool, "query", {"sql_query": "SELECT 42 AS n", "s3_key": "AKID", "s3_secret": "SECRET"})
+        assert "42" in str(out)
+
+    def test_secret_functions_refused(self):
+        """duckdb_secrets() shows the key ID of a proxy-injected secret."""
+        for sql in ("SELECT * FROM duckdb_secrets()", "SELECT which_secret('s3://x/y', 's3')"):
+            out = query(sql, s3_key="AKIDVISIBLE123", s3_secret="SECRETVALUE456")
+            assert out.startswith("SQL Error: duckdb_secrets() and which_secret() are not available")
+            assert "AKIDVISIBLE123" not in out
+
+    def test_credentials_redacted_from_errors_and_results(self):
+        from server import redact_credentials
+        assert redact_credentials("403 <AWSAccessKeyId>AKIDX123</AWSAccessKeyId>", ("AKIDX123", None)) == \
+            "403 <AWSAccessKeyId>[REDACTED]</AWSAccessKeyId>"
+        out = query("SELECT 'AKIDX123' AS k", s3_key="AKIDX123", s3_secret="SECRETX456")
+        assert "AKIDX123" not in out and "[REDACTED]" in out
+
     def test_credentials_not_in_logs(self, capsys):
         """S3 credentials must not appear in stderr output."""
         with get_isolated_db(s3_key="MY_KEY_ID", s3_secret="MY_SECRET_VALUE"):
@@ -793,10 +815,12 @@ class TestTileRouteMounted:
         tools = {t.name: t for t in anyio.run(mcp.list_tools)}
         assert "query" in tools
         assert tools["query"].description == query.__doc__
+        # s3_key and s3_secret are accepted (a proxy may inject them) but not
+        # advertised: the model never passes keys.
         assert sorted(tools["query"].inputSchema["properties"]) == [
-            "s3_endpoint", "s3_key", "s3_region", "s3_scope", "s3_secret",
-            "s3_url_style", "sql", "sql_query",
+            "s3_endpoint", "s3_region", "s3_scope", "s3_url_style", "sql", "sql_query",
         ]
+        assert "pass s3_key, s3_secret" not in tools["query"].description
 
     def test_served_tool_schema_titles_dont_leak_wrapper_name(self):
         """The async wrappers (_query_tool, _register_hex_tiles_tool, ...) must not
