@@ -1,23 +1,16 @@
-# Egress containment for the DuckDB MCP servers in biodiversity.
+# Egress limits for the DuckDB MCP servers in biodiversity.
 #
-# These servers run caller-supplied SQL, and a caller can aim s3:// reads at any
-# host with CREATE SECRET ... ENDPOINT, so without an egress rule the pods are
-# an SSRF proxy into the cluster (the 2026-11-07 intrusion tried prometheus,
-# etcd and 169.254.169.254). These policies allow DNS and https to public
-# addresses only, plus each app-catalog server's own app on port 80.
+# These servers run caller-supplied SQL, so they may reach only what they need:
+# cluster DNS and https to public addresses. In-cluster services, private
+# ranges and link-local addresses are not reachable.
 #
-# NRP Ceph is read through its external endpoint (s3-west.nrp-nautilus.io): each
-# Deployment sets S3_DEFAULT_ENDPOINT and S3_ENDPOINT_URL to it, because our
-# account can't read the rook Service to write a rule for the internal RGW. When
-# NRP gives us that rule, add it here and drop those env vars. Switch a server's
-# endpoint before adding it here, or it loses Ceph.
+# NRP Ceph is read through its external endpoint (s3-west.nrp-nautilus.io):
+# each selected Deployment sets S3_DEFAULT_ENDPOINT and S3_ENDPOINT_URL to it.
+# A rule for the faster internal RGW will be added here once NRP confirms how
+# to select it; the endpoint env vars are dropped then.
 #
-# Egress only. Ingress to these pods is set by NRP's incident-mcp-deny-ingress,
-# which this file does not touch.
-#
-# Manifests of the selected servers: duckdb-mcp and dev-duckdb-mcp in this repo;
-# ca30x30-mcp in boettiger-lab/ca-30x30, wyoming-mcp in boettiger-lab/wyoming,
-# sdm-mcp in boettiger-lab/hexsdm.
+# Switch a server to the external endpoint before adding it to this selector,
+# or it loses Ceph. Egress only: this policy sets no ingress rules.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -31,9 +24,6 @@ spec:
       values:
       - duckdb-mcp
       - dev-duckdb-mcp
-      - ca30x30-mcp
-      - wyoming-mcp
-      - sdm-mcp
   policyTypes:
   - Egress
   egress:
@@ -50,10 +40,8 @@ spec:
       protocol: UDP
     - port: 53
       protocol: TCP
-  # https to public addresses only: s3-west, source.coop on AWS, the STAC
-  # catalog, minio.carlboettiger.info and https:// reads in queries. Private,
-  # link-local and cluster ranges are excluded, so no in-cluster service is
-  # reachable this way.
+  # https to public addresses only: NRP Ceph, source.coop on AWS, the STAC
+  # catalog and https:// reads in queries.
   - to:
     - ipBlock:
         cidr: 0.0.0.0/0
@@ -72,46 +60,4 @@ spec:
         - ::1/128
     ports:
     - port: 443
-      protocol: TCP
----
-# ca30x30-mcp reads its STAC catalog from the ca-30x30 app's nginx in-cluster.
-apiVersion: networking.k8s.io/v1
-kind: NetworkPolicy
-metadata:
-  name: mcp-egress-ca30x30-catalog
-  namespace: biodiversity
-spec:
-  podSelector:
-    matchLabels:
-      app: ca30x30-mcp
-  policyTypes:
-  - Egress
-  egress:
-  - to:
-    - podSelector:
-        matchLabels:
-          app: ca-30x30
-    ports:
-    - port: 80
-      protocol: TCP
----
-# wyoming-mcp reads its STAC catalog from the wyoming app's nginx in-cluster.
-apiVersion: networking.k8s.io/v1
-kind: NetworkPolicy
-metadata:
-  name: mcp-egress-wyoming-catalog
-  namespace: biodiversity
-spec:
-  podSelector:
-    matchLabels:
-      app: wyoming-mcp
-  policyTypes:
-  - Egress
-  egress:
-  - to:
-    - podSelector:
-        matchLabels:
-          app: wyoming
-    ports:
-    - port: 80
       protocol: TCP

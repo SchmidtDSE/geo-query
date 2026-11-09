@@ -1,9 +1,7 @@
 # Network containment for duckdb-mcp in schmidtdse.
 #
-# The server runs caller-supplied SQL, and a caller can aim s3:// reads at any
-# host with CREATE SECRET ... ENDPOINT, so egress must be closed to everything
-# the server does not need. Without that, the pods are an SSRF proxy into the
-# cluster (the 2026-11-07 intrusion tried prometheus, etcd and 169.254.169.254).
+# The server runs caller-supplied SQL, so it may reach only what it needs:
+# cluster DNS and https to public addresses.
 #
 # Egress: DNS and https to public addresses only. NRP Ceph is read through its
 # external endpoint (s3-west.nrp-nautilus.io; see S3_DEFAULT_ENDPOINT in
@@ -59,9 +57,8 @@ spec:
       protocol: UDP
     - port: 53
       protocol: TCP
-  # https to public addresses only: s3-west, source.coop on AWS, the STAC
-  # catalog and https:// reads in queries. Private, link-local and cluster
-  # ranges are excluded, so no in-cluster service is reachable this way.
+  # https to public addresses only: NRP Ceph, source.coop on AWS, the STAC
+  # catalog and https:// reads in queries.
   - to:
     - ipBlock:
         cidr: 0.0.0.0/0
