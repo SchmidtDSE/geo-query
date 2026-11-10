@@ -62,12 +62,13 @@ spec:
           sizeLimit: 50Gi
       containers:
       - name: server
-        # Same digest prod runs (v0.9.5: locked DuckDB config, non-root).
-        image: ghcr.io/schmidtdse/geo-query:v0.9.5@sha256:35c6028e99203b3ac091bb3458e32e221a4ea8004447fb5b016826651de3dffa
+        # Latest :main build (ebe38be), pinned by digest so both replicas converge
+        # on one build. Ahead of the v0.9.5 release: includes #464 (S3 keys kept
+        # out of the model-facing query schema). No APP_VERSION override, so
+        # /version reports "main" plus the image's git_sha.
+        image: ghcr.io/schmidtdse/geo-query:main@sha256:fdafda775aa2e147f0ca298173b171b518f610f64d8aea05247fcec4f58fc665
         imagePullPolicy: IfNotPresent
         env:
-        - name: APP_VERSION
-          value: "v0.9.5"
         # Bearer-token auth (#43, #454): every route except /healthz and /version
         # (and public /tiles below) needs `Authorization: Bearer <token>`. The
         # server refuses to start if this directory holds no tokens.

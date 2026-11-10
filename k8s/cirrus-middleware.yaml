@@ -28,9 +28,11 @@ spec:
       - Content-Type
       - Authorization
       - mcp-session-id
+    # Any origin may call, but without credentials: clients authenticate with a
+    # bearer token they add themselves, never cookies. With credentials on,
+    # Traefik reflected every Origin back with allow-credentials: true.
     accessControlAllowOriginList:
       - "*"
-    accessControlAllowCredentials: true
     accessControlMaxAge: 86400
     addVaryHeader: true
 ---
