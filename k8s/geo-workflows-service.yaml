@@ -1,0 +1,16 @@
+# No Ingress, and the NetworkPolicy admits no in-cluster callers. The Service is
+# the port-forward target for the data-workflows agent:
+#   kubectl port-forward -n geo-workflows svc/duckdb-mcp 8000:8000
+apiVersion: v1
+kind: Service
+metadata:
+  name: duckdb-mcp
+  namespace: geo-workflows
+spec:
+  selector:
+    app: duckdb-mcp
+  sessionAffinity: None
+  ports:
+    - protocol: TCP
+      port: 8000
+      targetPort: 8000
