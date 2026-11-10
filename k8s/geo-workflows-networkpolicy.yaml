@@ -1,0 +1,59 @@
+# Network containment for duckdb-mcp in geo-workflows (#479).
+#
+# The server runs caller-supplied SQL, so it may reach only what it needs:
+# cluster DNS and https to public addresses. NRP Ceph is read through its
+# external endpoint (s3-west.nrp-nautilus.io; see S3_DEFAULT_ENDPOINT in
+# geo-workflows-deployment.yaml).
+#
+# Ingress: none. The data-workflows agent connects with kubectl port-forward,
+# which enters through the pod's own network namespace and is not subject to
+# this policy. Kubelet probes come from the node and are admitted by the CNI.
+# The geo-workflows build pods share this namespace and are deliberately left out.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: duckdb-mcp-containment
+  namespace: geo-workflows
+spec:
+  podSelector:
+    matchLabels:
+      app: duckdb-mcp
+  policyTypes:
+  - Ingress
+  - Egress
+  ingress: []
+  egress:
+  # Cluster DNS.
+  - to:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: kube-system
+      podSelector:
+        matchLabels:
+          k8s-app: kube-dns
+    ports:
+    - port: 53
+      protocol: UDP
+    - port: 53
+      protocol: TCP
+  # https to public addresses only: NRP Ceph, source.coop on AWS, the STAC
+  # catalog and https:// reads in queries.
+  - to:
+    - ipBlock:
+        cidr: 0.0.0.0/0
+        except:
+        - 10.0.0.0/8
+        - 172.16.0.0/12
+        - 192.168.0.0/16
+        - 100.64.0.0/10
+        - 169.254.0.0/16
+        - 127.0.0.0/8
+    - ipBlock:
+        cidr: ::/0
+        except:
+        - fc00::/7
+        - fe80::/10
+        - ::1/128
+    ports:
+    - port: 443
+      protocol: TCP
