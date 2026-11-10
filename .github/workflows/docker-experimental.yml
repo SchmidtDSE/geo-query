@@ -4,10 +4,10 @@ name: Build experimental Docker image
 # Dockerfile.experimental — the default image plus the `raster` and `zarr`
 # community extensions (issue #354).
 #
-# Deliberately NOT triggered by pushes to main. This tag backs a single testing
-# endpoint (experimental-duckdb-mcp) and is meant to move only when someone is
-# actually exercising it; an automatic rebuild on every main push would swap the
-# image under a live test session.
+# Deliberately NOT triggered by pushes to main. The tag is for testing and is
+# meant to move only when someone is actually exercising it. It has no
+# deployment: experimental-duckdb-mcp was removed after the Nov 7 2026 SSRF
+# incident.
 #
 # BASE_TAG selects which default image to layer on. It defaults to :main, so the
 # experimental build inherits main's dependency and stock-extension layers while
