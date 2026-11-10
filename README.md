@@ -369,9 +369,76 @@ kubectl -n biodiversity patch secret duckdb-mcp-tokens --type=json -p '[{"op":"r
 kubectl -n biodiversity rollout restart deployment/duckdb-mcp deployment/dev-duckdb-mcp
 ```
 
-An app in another namespace gets a copy of its own token there as a Secret
-`duckdb-mcp-auth` with key `MCP_AUTH_TOKEN`, which is what the app manifests
-reference.
+An app in another namespace that calls the `biodiversity` server gets a copy of
+its own token there as a Secret `duckdb-mcp-auth` with key `MCP_AUTH_TOKEN`,
+which is what the app manifests reference. The apps in `schmidtdse` use their own
+server instead, described next.
+
+### The schmidtdse server
+
+The `schmidtdse` namespace runs its own copy of the server
+(`k8s/schmidtdse-*.yaml`) with its own tokens. It has no Ingress: only the apps
+listed in the `duckdb-mcp-containment` NetworkPolicy can reach it, at
+`http://duckdb-mcp.schmidtdse.svc.cluster.local:8000`. Tiles are not public
+there, so browsers fetch them through each app, which adds its token.
+
+Tokens live in the Secret `schmidtdse/duckdb-mcp-tokens`, one key per app,
+named for the app. The same Secret is mounted into the server as
+`MCP_AUTH_TOKENS_DIR` and referenced by each app's Deployment:
+
+```yaml
+- name: MCP_AUTH_TOKEN
+  valueFrom:
+    secretKeyRef: {name: duckdb-mcp-tokens, key: <app>}
+```
+
+The server returns hex tile URLs on its `MCP_PUBLIC_BASE_URL`, which is the
+internal address above. Each app's nginx rewrites that prefix to its own host in
+`/api/mcp` responses and proxies `/tiles/` to the server:
+
+```nginx
+location /api/mcp {
+    proxy_pass http://duckdb-mcp.schmidtdse.svc.cluster.local:8000/mcp;
+    proxy_http_version 1.1;
+    proxy_set_header Host duckdb-mcp.schmidtdse.svc.cluster.local;
+    proxy_set_header Connection "";
+    proxy_set_header Authorization "Bearer ${MCP_AUTH_TOKEN}";
+    # sub_filter cannot read a gzipped body.
+    proxy_set_header Accept-Encoding "";
+    sub_filter 'http://duckdb-mcp.schmidtdse.svc.cluster.local:8000/tiles/' 'https://$host/tiles/';
+    sub_filter_once off;
+    sub_filter_types text/event-stream application/json;
+    proxy_read_timeout 600s;
+    proxy_send_timeout 600s;
+    proxy_buffering off;
+}
+
+location /tiles/ {
+    limit_except GET { deny all; }
+    proxy_pass http://duckdb-mcp.schmidtdse.svc.cluster.local:8000/tiles/;
+    proxy_http_version 1.1;
+    proxy_set_header Host duckdb-mcp.schmidtdse.svc.cluster.local;
+    proxy_set_header Connection "";
+    proxy_set_header Authorization "Bearer ${MCP_AUTH_TOKEN}";
+}
+```
+
+- `MCP_PUBLIC_BASE_URL` must stay exactly
+  `http://duckdb-mcp.schmidtdse.svc.cluster.local:8000`, since every app's
+  `sub_filter` matches it. An empty value gives relative URLs that the rewrite
+  misses.
+- An app that already serves something else at `/tiles/` can rewrite and proxy a
+  narrower prefix. cacao-internal uses `/tiles/hex/`, because its `/tiles/`
+  serves private PMTiles.
+- Behind oauth2-proxy, `$host` is still the app's public host, since
+  oauth2-proxy passes `Host` through.
+- To add an app, add its `app` label to the ingress list in
+  `k8s/schmidtdse-networkpolicy.yaml` and apply it, add a key for it to
+  `duckdb-mcp-tokens` (the add command above, with `-n schmidtdse`), and restart
+  `deployment/duckdb-mcp` in `schmidtdse` so the server reads the new token.
+
+The server's egress is limited to cluster DNS and https to public addresses, so
+it reads NRP Ceph through the external endpoint `s3-west.nrp-nautilus.io`.
 
 ### Local file access and DuckDB settings
 
