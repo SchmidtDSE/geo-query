@@ -1,6 +1,7 @@
 # Experimental image: the default server plus the `raster` and `zarr` community
-# extensions. Published as :experimental, deployed to experimental-duckdb-mcp
-# (k8s/experimental-*.yaml). Never promoted to the default endpoint — issue #354.
+# extensions. Published as :experimental for local testing. It has no deployment:
+# experimental-duckdb-mcp was removed after the Nov 7 2026 SSRF incident. Never
+# promoted to the default endpoint — issue #354.
 #
 # Layered on the default image rather than duplicating it, so the Python deps and
 # the stock httpfs/spatial/h3 extension layer are shared and cannot drift. CI passes
