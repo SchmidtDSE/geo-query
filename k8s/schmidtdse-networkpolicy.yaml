@@ -38,7 +38,9 @@ spec:
           - cacao-internal
           - coasts
           - roadless-rule
+          - tpl
           - tpl-ca
+          - tpl-cities
           - utah-public-lands
     ports:
     - port: 8000
