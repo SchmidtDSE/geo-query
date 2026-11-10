@@ -16,8 +16,9 @@ branch. Repointing dev to a branch stomps `main` and decays into the hand-pinnin
 loop that keeps breaking it (#341/#366).
 
 **To test a change before it merges**, do not repoint dev. Options:
-- **Merge-then-validate (works today):** merge to `main` → dev rolls onto that
-  digest → run the headless matrix with `MCP_URL=dev`. This is the current gate.
+- **Merge-then-validate:** merge to `main` → dev rolls onto that digest → run
+  glen-benchmark against dev (see *Validating guidance changes*). This is the
+  gate, and it is unavailable while NRP keeps dev closed.
 - **Preview env (planned, #366):** a `preview` label builds `:pr-<n>` for an
   ephemeral `dev-pr-<n>` — the build trigger and CI deploy land with the NRP
   deploy token.
@@ -30,7 +31,7 @@ It loads DuckDB plus the full STAC catalog in-process; running it here OOM'd the
 pod and took down the instance (2026-07-07). There is no "local MCP" testing path —
 if you catch yourself starting `server.py`, `uvicorn`, or a wrapper that imports the
 server on this machine, stop. The workflow is: land the change on dev (dev tracks
-`:main` — see Rollout below), then validate on dev with the headless matrix
+`:main` — see Rollout below), then validate on dev with glen-benchmark
 (see *Validating guidance changes*).
 
 **When NRP Ceph (`s3-west.nrp-nautilus.io`) is down**, don't improvise a fallback:
@@ -394,13 +395,13 @@ signal, and banning it would push authors to invent a cell reference rather than
 
 ---
 
-## Validating guidance changes (headless model-suite test)
+## Validating guidance changes
 
 **Every change to a prompt artifact** (`h3-guide.md`, `query-optimization.md`,
 `query-setup.md`, `assistant-role.md`, `datasets.md`) **must be validated against the
-open-model suite on dev before it ships to prod.** It is not done until the matrix
-shows **both**: (a) the targeted failure is fixed, and (b) no regression on the
-standing baseline set (below). These files are runtime instructions for small open
+open-model suite on dev before it ships to prod.** It is not done until the runs
+show **both**: (a) the targeted failure is fixed, and (b) no regression on the
+standing baseline. These files are runtime instructions for small open
 models — the ground truth is not "does the SQL I write run," it's "does the model
 *generate* the right SQL after reading this guidance." Only running the models confirms that. A fix verified solely by
 running the corrected query yourself proves the pattern works, not that the guidance
@@ -411,61 +412,39 @@ wording is safer wording — say it once, in the most-read place, and stop. Pref
 editing an existing rule over adding a parallel one; never restate a rule the suite
 already passes.
 
-The question bank, gold answers, and tiers live in **`boettiger-lab/geo-agent-benchmark`**
-(private) — read its `AGENTS.md` for the full runbook. Execution is the harness in
-**`boettiger-lab/open-llm-proxy`** under `headless/`, which replays the real geo-agent
-tool-use loop from the command line against the LLM proxy, so prompt assembly, the
-tool-call parser, and the MCP transport stay in sync with the browser app by
-construction.
+**The suite is `boettiger-lab/glen-benchmark`** (private; formerly
+geo-agent-benchmark). It holds the questions, gold answers, tiers, the runner and
+the grading scripts. Its `AGENTS.md` is the runbook: read "Boundaries", "The tiers"
+and "Run a benchmark — the happy path" there rather than copying commands here.
+The shape of a gate run, per app:
 
-**Workflow for a guidance change:**
+```bash
+cd ../glen-benchmark
+MCP_URL=<endpoint serving the candidate guidance> \
+  APP_REPO=boettiger-lab/<app> TIER=regression ./scripts/run_benchmark.sh
+# and again with TIER=numeric
+```
 
-1. Merge the change and let dev pick it up — dev tracks `:main` and serves the
-   injected guidance. (Confirm: `curl -s https://dev-duckdb-mcp.nrp-nautilus.io/version`
-   git_sha matches `main`; the new text appears in the `query` tool description.)
-2. Run the `regression` tier as one-shot k8s Jobs (they pull `PROXY_KEY` from the
-   cluster Secret — no local creds, and reading that Secret locally is not the
-   supported path). **`MCP_URL` is what points a run at dev** — every app repo
-   commits an `mcp_url` aimed at a production head, so a run without it measures the
-   *old* guidance no matter what dev is serving:
+- **Run both `regression` and `numeric`.** They are disjoint: free-text trap
+  guards are in `regression`, script-graded ones in `numeric`. A change that
+  passes only one has not passed the gate.
+- **`MCP_URL` must point at a server serving the candidate guidance**, normally
+  dev. Every app repo commits an `mcp_url` aimed at a production head, so a run
+  without it measures the released guidance. Check the endpoint each run
+  records before believing its results.
+- **Include every model that showed the failure**, plus a spread of the suite,
+  and establish the correct answer yourself first so the transcripts have
+  something to check against.
+- **Grow on fix:** add the question that exposed a new trap to the suite with a
+  `trap:` tag, in glen-benchmark.
 
-   ```bash
-   cd ../geo-agent-benchmark
-   MCP_URL=https://dev-duckdb-mcp.nrp-nautilus.io/mcp \
-     APP_REPO=boettiger-lab/ca-30x30 TIER=regression \
-     MODELS="z-ai/glm-5.2" TRIALS=2 TAG=<short-tag> \
-     ./scripts/run_benchmark.sh
-   ```
-
-   One Job per model runs them in parallel (one pod each, `MODELS` holding a single
-   value, distinct `TAG`s); one Job with several models runs them serially in one pod.
-   The runner is per-app, so repeat per app repo to cover a whole tier. The tier
-   already carries the trap gates *and* the standing baseline, so the fix and the
-   regression check share one run.
-
-3. Read the transcripts from `kubectl -n biodiversity logs job/<JOB_NAME>`: confirm
-   (a) the models emit the intended SQL pattern and the correct answer and the prior
-   failure form is gone (zero occurrences), **and** (b) every baseline question still
-   resolves to its known-good answer — no question the change wasn't aimed at got worse.
-   Check the Job log's `--- mcp: ---` line says dev before believing any of it.
-   A regression on the baseline blocks promotion to prod even if the targeted trap is
-   fixed — fix forward or revert on dev first.
-
-**Pick the models deliberately.** Always include any model that previously exhibited
-the failure (the logs naming the symptom are the regression set), plus a spread of the
-suite. `geo-agent-benchmark/suite/models.yaml` is the model registry
-(`python3 scripts/models.py standard`); an app's `k8s/configmap.yaml` picker is what
-`MODELS`-unset measures — deployed behavior. Establish a ground-truth answer first by
-running the correct query yourself, so the transcripts have something to check against.
-
-**The standing baseline is the `regression` tier** in `geo-agent-benchmark` — a fixed
-set of questions with golden answers (`suite/gold/`), re-run on every guidance change
-to catch collateral damage, and graded mechanically (`scripts/grade.py`). Grow-on-fix:
-when a change fixes a new trap, add the question that exposed it to the tier with a
-`trap:` tag, so future changes can't silently reintroduce it.
-
-To A/B-test app-level *system prompt* wording (not the MCP-injected guides) without
-forking the app, `run-matrix-k8s.sh` takes `SYSTEM_PROMPT_APPEND_FILE`.
+**No gate is available while NRP keeps dev closed.** `dev-duckdb-mcp` has no
+Ingress, and an NRP policy on the MCP servers closes it to every pod,
+including the benchmark's Jobs. A run against the mirror
+(`duckdb-mcp.carlboettiger.info`) or prod measures the released guidance, not a
+candidate, so it does not count as validation of a guidance change. Neither does
+the runner's `SYSTEM_PROMPT_APPEND_FILE`, which adds to the app's prompt rather
+than replacing what the server serves. Hold guidance changes, or ask Carl.
 
 ---
 
