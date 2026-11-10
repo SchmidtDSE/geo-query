@@ -1539,6 +1539,53 @@ class TestFlatHexColumnDedup:
         assert "SLDUST" in md
 
 
+class TestColumnsFromCollectionDictionary:
+    """Portolan layout (PORTO-FMT-046/048): the collection holds the one column
+    dictionary, and an asset lists its own names/types only where its schema
+    differs. Descriptions and values come from the collection; an asset with
+    no list of its own is described by the collection's."""
+
+    def _make(self):
+        col = MagicMock()
+        col.id, col.title, col.description = "wcb", "WCB", "d"
+        col.get_self_href.return_value = None
+        col.extra_fields = {"table:columns": [
+            {"name": "ProjectID", "type": "string", "description": "WCB project id"},
+            {"name": "Acres", "type": "double", "description": "Project acres"},
+            {"name": "Status", "type": "string", "description": "Project status", "values": ["Approved", "Closed"]},
+        ]}
+
+        flat = MagicMock()
+        flat.href = "https://s3-west.nrp-nautilus.io/public-tpl/wcb/wcb.parquet"
+        flat.media_type = "application/vnd.apache.parquet"
+        flat.title, flat.description = "GeoParquet", None
+        flat.extra_fields = {}  # matches the dictionary, so no list of its own
+
+        hex_a = MagicMock()
+        hex_a.href = "https://s3-west.nrp-nautilus.io/public-tpl/wcb/hex/"
+        hex_a.media_type = "application/vnd.apache.parquet"
+        hex_a.title, hex_a.description = "hex", None
+        hex_a.extra_fields = {"table:columns": [
+            {"name": "ProjectID", "type": "string"},
+            {"name": "Status", "type": "string"},
+            {"name": "h8", "type": "string"},
+        ]}
+        col.assets = {"data": flat, "hex": hex_a}
+        return col
+
+    def test_asset_without_list_takes_the_collection_dictionary(self):
+        md = _format_collection(self._make(), sub_children=[])
+        assert "  - GeoParquet: `read_parquet('s3://public-tpl/wcb/wcb.parquet')`\n    - columns: `ProjectID` (string), `Acres` (double), `Status` (string)" in md
+        assert "`Acres` (double) — Project acres" in md
+
+    def test_names_only_list_gets_descriptions_and_values_from_the_collection(self):
+        md = _format_collection(self._make(), sub_children=[])
+        assert md.count("WCB project id") == 1
+        assert "`Status` (string) — Project status" in md
+        assert "values: ['Approved', 'Closed']" in md
+        assert "Key columns" not in md
+
+
 class TestInlineCollectionContent:
     """Inline `collection=` / `catalog=` parameters bypass the HTTP fetch — caller
     hands the already-loaded JSON over instead of letting the server re-fetch via

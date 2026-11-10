@@ -335,7 +335,11 @@ def _extract_parquet_assets(col, compact: bool = False) -> list[str]:
             if compact:
                 continue
             # Per-asset column *set* only (names/types); descriptions are shared below.
-            asset_cols = asset.extra_fields.get("table:columns", [])
+            # An asset without its own list is described by the collection's:
+            # under Portolan the collection holds the one column dictionary
+            # (PORTO-FMT-046) and an asset lists its own columns only where its
+            # schema differs (PORTO-FMT-048).
+            asset_cols = asset.extra_fields.get("table:columns") or col.extra_fields.get("table:columns") or []
             summary = _asset_column_summary(asset_cols)
             if summary:
                 assets.append(f"    - columns: {summary}")
@@ -355,6 +359,16 @@ def _extract_parquet_assets(col, compact: bool = False) -> list[str]:
                             existing[k] = c[k]
 
     if not compact:
+        # Fill what the assets leave out (description, values, type) from the
+        # collection's dictionary, matching by name: a per-asset list may carry
+        # only names and types (PORTO-FMT-048).
+        for c in col.extra_fields.get("table:columns") or []:
+            existing = shared_cols.get(c.get("name"))
+            if existing is None:
+                continue
+            for k in ("description", "values", "type"):
+                if not existing.get(k) and c.get(k):
+                    existing[k] = c[k]
         block = _format_columns(list(shared_cols.values()))
         if block:
             assets.append("\nColumn descriptions (shared across the assets above):")
