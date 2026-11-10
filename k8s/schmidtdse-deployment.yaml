@@ -1,0 +1,156 @@
+# duckdb-mcp for the schmidtdse apps: a copy of prod (biodiversity) with its own
+# tokens, reachable only inside the cluster. See schmidtdse-networkpolicy.yaml.
+#
+# Apply schmidtdse-networkpolicy.yaml before this file.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: duckdb-mcp
+  namespace: schmidtdse
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: duckdb-mcp
+  template:
+    metadata:
+      labels:
+        app: duckdb-mcp
+    spec:
+      # The server never calls the Kubernetes API; a mounted token was readable
+      # through DuckDB in the 2026-11-06 incident.
+      automountServiceAccountToken: false
+      # Non-root, matching the image's app user (uid 10001). fsGroup makes the
+      # mounted token files readable by the app's group.
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      volumes:
+      - name: mcp-tokens
+        secret:
+          secretName: duckdb-mcp-tokens
+          defaultMode: 0440
+      # Spill space: the root filesystem is read-only. Capped at the namespace's
+      # default ephemeral-storage limit (50Gi on NRP), stated here so the cap
+      # doesn't depend on that default; past it the pod is evicted, not the node
+      # filled. DuckDB stops each connection at half the pod limit before that.
+      - name: tmp
+        emptyDir:
+          sizeLimit: 50Gi
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: topology.kubernetes.io/region
+                    operator: In
+                    values: ["us-west"]
+      containers:
+      - name: server
+        image: ghcr.io/schmidtdse/geo-query:v0.9.5@sha256:35c6028e99203b3ac091bb3458e32e221a4ea8004447fb5b016826651de3dffa
+        imagePullPolicy: IfNotPresent
+        env:
+        # Release identity is supplied HERE, not baked into the image (#413). The
+        # image is built once from `main` and a release only adds a tag to that
+        # existing manifest — so its own ENV still says "main", and this overrides
+        # it. Keep this in step with the `:vX.Y.Z` in `image:` above; CI enforces
+        # that they match (tests/check_k8s_image_pins.py). GIT_SHA is NOT overridden:
+        # the image's own value is the commit it was built from, which stays correct
+        # through a retag.
+        - name: APP_VERSION
+          value: "v0.9.5"
+        - name: STAC_CATALOG_URL
+          value: "https://s3-west.nrp-nautilus.io/public-data/stac/catalog.json"
+        # NRP Ceph through its external https endpoint, not the internal RGW
+        # (rook-ceph-rgw-nautiluss3.rook). The egress NetworkPolicy
+        # (schmidtdse-networkpolicy.yaml) allows only DNS and public https until
+        # NRP gives us a rule for internal RGW; then drop these two to return to
+        # the much faster internal endpoint.
+        - name: S3_DEFAULT_ENDPOINT
+          value: "s3-west.nrp-nautilus.io"
+        - name: S3_ENDPOINT_URL
+          value: "https://s3-west.nrp-nautilus.io"
+        # No public host: the server has no Ingress. Hex tile URLs come back on
+        # this internal base, and each app's nginx rewrites the prefix to its
+        # own https host in /api/mcp responses (sub_filter) and proxies /tiles/
+        # here with its own token. Changing this value breaks those rewrites.
+        - name: MCP_PUBLIC_BASE_URL
+          value: "http://duckdb-mcp.schmidtdse.svc.cluster.local:8000"
+        # Bearer-token auth (#43, #454): every route except /healthz and /version
+        # needs `Authorization: Bearer <token>`, /tiles included. One token per
+        # app, from the schmidtdse/duckdb-mcp-tokens Secret mounted below: each
+        # key names the app, so one can be revoked alone. Apps add their token
+        # server-side in their nginx. The server reads tokens only at startup, so
+        # adding or revoking a key needs a rollout restart.
+        - name: MCP_AUTH_TOKENS_DIR
+          value: /etc/mcp-tokens
+        # Pod's cgroup memory limit → DuckDB memory_limit (~80%), so an oversized
+        # query spills to /tmp instead of OOM-killing the replica and every
+        # co-tenant query on it (#270).
+        - name: POD_MEMORY_LIMIT
+          valueFrom:
+            resourceFieldRef:
+              containerName: server
+              resource: limits.memory
+        # Container's ephemeral-storage limit (unset here, so the namespace
+        # LimitRange default — 50Gi on NRP) → DuckDB max_temp_directory_size (~50%
+        # per connection), so an oversized spill fails its query instead of the
+        # kubelet evicting the pod (#423).
+        - name: POD_EPHEMERAL_LIMIT
+          valueFrom:
+            resourceFieldRef:
+              containerName: server
+              resource: limits.ephemeral-storage
+        volumeMounts:
+        - name: mcp-tokens
+          mountPath: /etc/mcp-tokens
+          readOnly: true
+        - name: tmp
+          mountPath: /tmp
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop: ["ALL"]
+        resources:
+          # Requests intentionally kept small (≤2 GiB memory, ≤1 CPU) to land in
+          # NRP's "Ignored" bucket for utilization violations. Limits stay high so
+          # legitimate large queries (~100 GiB memory, multi-CPU) can still burst.
+          requests:
+            memory: 2Gi
+            cpu: 250m
+          limits:
+            memory: 160Gi
+            cpu: 64
+        ports:
+        - containerPort: 8000
+        # Probes exercise an actual HTTP request (GET /healthz) rather than a
+        # bare TCP accept. Under a TCP-only probe a pod whose uvicorn event loop
+        # is starved (e.g. by a runaway DuckDB query saturating CPU/memory) still
+        # passes — the kernel accepts the connection regardless of whether the
+        # app writes a response — and HAProxy keeps routing ~50% of traffic to a
+        # wedged backend. See issue #157.
+        readinessProbe:
+          httpGet:
+            path: /healthz
+            port: 8000
+          initialDelaySeconds: 15
+          periodSeconds: 5
+          timeoutSeconds: 2
+          failureThreshold: 3
+        # Liveness restarts a chronically wedged pod (3 minutes of unresponsive
+        # /healthz). Longer than readiness so a temporarily slow pod gets pulled
+        # from the Service first; only a deeply stuck one is killed.
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: 8000
+          initialDelaySeconds: 30
+          periodSeconds: 30
+          timeoutSeconds: 10
+          failureThreshold: 6
+

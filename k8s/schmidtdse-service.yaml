@@ -1,0 +1,15 @@
+# In-cluster only: there is no Ingress for this server. Apps reach it from their
+# nginx at http://duckdb-mcp.schmidtdse.svc.cluster.local:8000/mcp.
+apiVersion: v1
+kind: Service
+metadata:
+  name: duckdb-mcp
+  namespace: schmidtdse
+spec:
+  selector:
+    app: duckdb-mcp
+  sessionAffinity: None
+  ports:
+    - protocol: TCP
+      port: 8000
+      targetPort: 8000
