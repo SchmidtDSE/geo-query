@@ -10,7 +10,8 @@
 # - bearer-token auth from the duckdb-mcp-auth Secret (one file per caller);
 # - non-root, read-only root filesystem, no service-account token mounted;
 # - every DuckDB connection runs dbconfig.lock_down() (built into the image);
-# - cirrus-networkpolicy.yaml limits egress to in-cluster MinIO + DNS only.
+# - cirrus-networkpolicy.yaml limits egress to in-cluster MinIO, DNS and AWS S3
+#   us-west-2 (source.coop public data).
 #
 # The token Secret must exist before applying (never commit a token):
 #   kubectl -n mcp create secret generic duckdb-mcp-auth \
