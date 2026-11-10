@@ -1,7 +1,8 @@
 # Network containment for duckdb-mcp on cirrus (k3s, kube-router NetworkPolicy).
 #
 # The server runs caller-supplied SQL, so it must not become an SSRF proxy.
-# Egress is limited to the in-cluster MinIO S3 API and cluster DNS; nothing
+# Egress is limited to the in-cluster MinIO S3 API, cluster DNS, and AWS S3
+# us-west-2 on 443 (source.coop public data); nothing
 # else — not the internet, not other in-cluster services, not the public
 # minio.carlboettiger.info host. S3_SOURCES in cirrus-deployment.yaml routes the
 # mirror's public hrefs to minio-svc so reads still work.
@@ -54,4 +55,34 @@ spec:
           k8s-app: minio-app
     ports:
     - port: 9000
+      protocol: TCP
+  # Anonymous source.coop reads. The server rewrites data.source.coop hrefs to
+  # s3://us-west-2.opendata.source.coop/ (s3config.py), served by AWS S3 in
+  # us-west-2, so only those ranges on 443 are opened — not the Cloudflare-fronted
+  # data.source.coop gateway. This also reaches other public us-west-2 buckets;
+  # the pod holds no credentials or secrets DuckDB can read, so that is accepted.
+  # AWS publishes the ranges; regenerate when they change:
+  #   curl -s https://ip-ranges.amazonaws.com/ip-ranges.json | jq -r \
+  #     '.prefixes[] | select(.service=="S3" and .region=="us-west-2") | .ip_prefix' | sort
+  # (17 prefixes, ip-ranges.json createDate 2026-11-09-20-47-05)
+  - to:
+    - ipBlock: {cidr: 1.178.65.0/24}
+    - ipBlock: {cidr: 1.178.9.0/24}
+    - ipBlock: {cidr: 16.12.104.0/21}
+    - ipBlock: {cidr: 16.12.112.0/21}
+    - ipBlock: {cidr: 16.12.88.0/21}
+    - ipBlock: {cidr: 16.12.96.0/21}
+    - ipBlock: {cidr: 16.15.32.0/20}
+    - ipBlock: {cidr: 18.34.244.0/22}
+    - ipBlock: {cidr: 18.34.48.0/20}
+    - ipBlock: {cidr: 3.2.106.0/24}
+    - ipBlock: {cidr: 3.2.68.0/24}
+    - ipBlock: {cidr: 3.5.76.0/22}
+    - ipBlock: {cidr: 3.5.80.0/21}
+    - ipBlock: {cidr: 35.80.36.208/28}
+    - ipBlock: {cidr: 35.80.36.224/28}
+    - ipBlock: {cidr: 52.218.128.0/17}
+    - ipBlock: {cidr: 52.92.128.0/17}
+    ports:
+    - port: 443
       protocol: TCP
