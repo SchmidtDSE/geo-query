@@ -13,6 +13,10 @@ bearer token (see [Authentication](#authentication)); ask the maintainers for
 one. Keep it in an environment variable or a password prompt, never in a file
 you commit.
 
+> The hosted endpoint `duckdb-mcp.nrp-nautilus.io` is offline for now: NRP has
+> closed public access to the MCP servers on its cluster. The examples below
+> show how a client connects once it is back.
+
 
 ### Using VSCode
 
@@ -179,10 +183,21 @@ Editing these files changes what the agent is told to do. They must be written f
 Deploy to Kubernetes using the provided manifests:
 
 ```bash
+kubectl apply -f k8s/mcp-egress-networkpolicy.yaml
 kubectl apply -f k8s/deployment.yaml
 kubectl apply -f k8s/service.yaml
-kubectl apply -f k8s/ingress.yaml
 ```
+
+Don't apply `k8s/ingress.yaml` or `k8s/dev-ingress.yaml` while NRP keeps public
+access to the MCP servers closed; NRP removed those Ingresses and will say when
+they can return.
+
+The egress policy limits the servers to cluster DNS and https to public
+addresses, so they read NRP Ceph through its external endpoint
+(`S3_DEFAULT_ENDPOINT` in the manifests). Apply it before a Deployment that
+reads Ceph that way. NRP also blocks pod traffic between namespaces, so a
+server is reachable in-cluster only from its own namespace; see
+[Authentication](#authentication).
 
 The deployment:
 - Runs multiple replicas for high availability (prod: 6, dev: 2)
@@ -369,10 +384,12 @@ kubectl -n biodiversity patch secret duckdb-mcp-tokens --type=json -p '[{"op":"r
 kubectl -n biodiversity rollout restart deployment/duckdb-mcp deployment/dev-duckdb-mcp
 ```
 
-An app in another namespace that calls the `biodiversity` server gets a copy of
-its own token there as a Secret `duckdb-mcp-auth` with key `MCP_AUTH_TOKEN`,
-which is what the app manifests reference. The apps in `schmidtdse` use their own
-server instead, described next.
+Apps reach the server in-cluster, from its own namespace. NRP blocks pod traffic
+between namespaces, so an app in another namespace cannot call the `biodiversity`
+server's Service; the request times out. Such an app uses a server in its own
+namespace, as the `schmidtdse` apps do (next section), or the public endpoint
+when there is one. An app that calls the public endpoint keeps its token in a
+Secret `duckdb-mcp-auth`, key `MCP_AUTH_TOKEN`, in its own namespace.
 
 ### The schmidtdse server
 
