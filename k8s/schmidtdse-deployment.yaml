@@ -51,7 +51,7 @@ spec:
                     values: ["us-west"]
       containers:
       - name: server
-        image: ghcr.io/schmidtdse/geo-query:v0.9.5@sha256:35c6028e99203b3ac091bb3458e32e221a4ea8004447fb5b016826651de3dffa
+        image: ghcr.io/schmidtdse/geo-query:v0.9.6@sha256:27ae81ea9a8aa9f3d005e6c4594a0bf300a4f9f51d6749428b9c5a04080de9c1
         imagePullPolicy: IfNotPresent
         env:
         # Release identity is supplied HERE, not baked into the image (#413). The
@@ -62,7 +62,7 @@ spec:
         # the image's own value is the commit it was built from, which stays correct
         # through a retag.
         - name: APP_VERSION
-          value: "v0.9.5"
+          value: "v0.9.6"
         - name: STAC_CATALOG_URL
           value: "https://s3-west.nrp-nautilus.io/public-data/stac/catalog.json"
         # NRP Ceph through its external https endpoint, not the internal RGW
