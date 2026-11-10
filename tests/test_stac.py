@@ -1535,8 +1535,12 @@ class TestFlatHexColumnDedup:
             {"name": "SLDUST", "type": "varchar", "description": "Senate district ID"},
         ]}
         md = _format_collection(col, sub_children=[])
-        assert "Key columns:" in md
+        # The assets take the collection's dictionary, so it prints once, in
+        # the shared block, and the trailer is not repeated.
         assert "SLDUST" in md
+        assert md.count("Senate district ID") == 1
+        assert "Key columns:" not in md
+
 
 
 class TestColumnsFromCollectionDictionary:

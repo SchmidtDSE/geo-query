@@ -254,23 +254,6 @@ def _asset_column_summary(table_cols: list) -> str:
     return ", ".join(parts)
 
 
-def _any_queryable_asset_has_columns(col) -> bool:
-    """True if any queryable asset carries its own `table:columns`.
-
-    Gates the collection-level `Key columns` trailer (#303): when assets are
-    self-describing, the shared per-asset block already covers every column, so
-    the trailer would be a redundant copy. It stays only as the sole source for
-    collections that describe columns solely at the collection level (e.g.
-    census sub-datasets whose hex assets carry no `table:columns`).
-    """
-    for asset in (col.assets or {}).values():
-        if not _is_queryable_asset(asset.href, asset.media_type or ""):
-            continue
-        if asset.extra_fields.get("table:columns"):
-            return True
-    return False
-
-
 def _extract_parquet_assets(col, compact: bool = False) -> list[str]:
     """Extract parquet/hex asset lines from a collection's assets.
 
@@ -376,17 +359,6 @@ def _extract_parquet_assets(col, compact: bool = False) -> list[str]:
     return assets
 
 
-def _extract_columns(col) -> list[str]:
-    """Extract table:columns as markdown lines from collection-level extra_fields."""
-    table_cols = col.extra_fields.get("table:columns", [])
-    if not table_cols:
-        return []
-
-    lines = ["\nKey columns:"]
-    lines.extend(_format_columns(table_cols))
-    return lines
-
-
 def _format_collection(col, sub_children: list = None) -> str:
     """Build a compact markdown summary of one STAC collection.
 
@@ -409,12 +381,10 @@ def _format_collection(col, sub_children: list = None) -> str:
     # Collect parquet assets from this level
     parquet_assets = _extract_parquet_assets(col)
 
-    # Collection-level "Key columns" trailer, kept ONLY as a fallback (#303):
-    # when queryable assets are self-describing, `_extract_parquet_assets` already
-    # renders every column once, so this would be a redundant 2nd/3rd copy. It
-    # survives solely for collections that describe columns at the collection
-    # level and nowhere else (e.g. census sub-datasets).
-    col_lines = [] if _any_queryable_asset_has_columns(col) else _extract_columns(col)
+    # No separate collection-level "Key columns" trailer (#303): every
+    # queryable asset's columns are rendered once by `_extract_parquet_assets`,
+    # which takes the collection's dictionary for an asset without its own
+    # list (Portolan PORTO-FMT-046/048), so a trailer would only repeat it.
 
     # Check for sub-children — some collections (wyoming-wildlife-lands,
     # pad-us, census) group sub-datasets as child collections, each with
@@ -438,8 +408,6 @@ def _format_collection(col, sub_children: list = None) -> str:
     elif parquet_assets:
         lines.append("\nSQL data (use with `query` tool):")
         lines.extend(parquet_assets)
-        if col_lines:
-            lines.extend(col_lines)
 
     return "\n".join(lines)
 
