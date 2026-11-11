@@ -203,7 +203,11 @@ The deployment:
 - Runs multiple replicas for high availability (prod: 6, dev: 2)
 - Allocates up to 160 Gi memory / 16 CPU per pod for large queries
 - Bakes the application code and dependencies into the image (no runtime clone)
-- Includes `/healthz` readiness + liveness probes for safe rollouts
+- Includes `/healthz` (liveness) and `/readyz` (readiness) probes for safe
+  rollouts. `/readyz` also fails while the pod has no STAC catalog, so a pod
+  that booted with `STAC_ALLOW_DEGRADED_START` leaves the Service until its
+  catalog loads; set `STAC_READY_WITHOUT_CATALOG=true` to keep such a pod in
+  service.
 
 ### Releases and production rollouts
 
@@ -365,7 +369,7 @@ Rather than maintaining a forked server deployment per app, private geo-agent ap
 
 ### Authentication
 
-Every route except `/healthz` and `/version` needs `Authorization: Bearer <token>`.
+Every route except `/healthz`, `/readyz` and `/version` needs `Authorization: Bearer <token>`.
 Deployments that set `MCP_AUTH_PUBLIC_TILES=true` also serve `GET /tiles/...` without
 a token, since the tile pyramids sit in a public bucket and browsers fetch them
 directly. Private replicas leave it off.

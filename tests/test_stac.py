@@ -2095,3 +2095,33 @@ class TestDiscoveryFlag:
         assert "browse_stac_catalog" not in off
         assert "no-such-collection" in off
         assert "browse_stac_catalog" in on
+
+
+
+# --- #429: readiness signal and the on-miss re-walk cooldown -------------------
+
+def test_catalog_loaded_tracks_the_default_catalog(monkeypatch):
+    import stac
+    monkeypatch.setattr(stac, "STAC_DATASETS", {})
+    assert stac.catalog_loaded() is False
+    monkeypatch.setattr(stac, "STAC_DATASETS", {"a": "summary"})
+    assert stac.catalog_loaded() is True
+
+
+def test_misses_rewalk_the_catalog_at_most_once_per_cooldown(monkeypatch):
+    """A degraded pod used to stall every lookup miss for the root timeout (#429),
+    and any unknown id re-walked the whole catalog."""
+    import stac
+    calls = []
+    monkeypatch.setattr(stac, "fetch_stac_catalog", lambda *a, **k: calls.append(1) or {})
+    monkeypatch.setattr(stac, "_last_miss_refetch", None)
+    monkeypatch.setattr(stac, "_STAC_MISS_REFETCH_COOLDOWN", 60.0)
+    clock = [1000.0]
+    monkeypatch.setattr(stac.time, "monotonic", lambda: clock[0])
+    assert "not found" in stac.get_dataset("no-such-dataset")
+    assert "not found" in stac.get_dataset("no-such-dataset-2")
+    assert "error" in stac.get_collection("no-such-collection")
+    assert len(calls) == 1
+    clock[0] += 61
+    stac.get_dataset("no-such-dataset")
+    assert len(calls) == 2

@@ -45,3 +45,11 @@ def sample_query_optimization():
 """
 
 
+@pytest.fixture(autouse=True)
+def _reset_stac_miss_refetch_cooldown():
+    """Each test starts with the on-miss re-walk cooldown clear (#429), so a miss
+    in one test can't suppress the re-walk another test expects."""
+    import stac
+    stac._last_miss_refetch = None
+    yield
+    stac._last_miss_refetch = None

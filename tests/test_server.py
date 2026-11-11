@@ -988,15 +988,45 @@ class TestHealthz:
     Replaces a TCP-only probe so a wedged uvicorn event loop fails fast."""
 
     def _build_app(self, with_auth_middleware=False):
-        from server import mcp, _healthz, _version, _BearerAuthMiddleware, mount_tiles
+        from server import mcp, _healthz, _readyz, _version, _BearerAuthMiddleware, mount_tiles
         app = mcp.streamable_http_app()
         app.router.redirect_slashes = False
         mount_tiles(app)
         app.add_route("/healthz", _healthz, methods=["GET"])
+        app.add_route("/readyz", _readyz, methods=["GET"])
         app.add_route("/version", _version, methods=["GET"])
         if with_auth_middleware:
             app.add_middleware(_BearerAuthMiddleware)
         return app
+
+    def test_readyz_follows_the_catalog_and_healthz_does_not(self, monkeypatch):
+        """A pod with no catalog (booted DEGRADED, never loaded) is alive but not
+        ready, so it leaves the Service and keeps retrying (#429)."""
+        import server
+        from starlette.testclient import TestClient
+        client = TestClient(self._build_app())
+        monkeypatch.setattr(server, "_READY_WITHOUT_CATALOG", False)
+        monkeypatch.setattr(server, "_stac_catalog_loaded", lambda: True)
+        assert client.get("/readyz").status_code == 200
+        monkeypatch.setattr(server, "_stac_catalog_loaded", lambda: False)
+        r = client.get("/readyz")
+        assert r.status_code == 503 and r.json()["ok"] is False
+        assert client.get("/healthz").status_code == 200
+
+    def test_readyz_opt_out_serves_without_a_catalog(self, monkeypatch):
+        import server
+        from starlette.testclient import TestClient
+        monkeypatch.setattr(server, "_READY_WITHOUT_CATALOG", True)
+        monkeypatch.setattr(server, "_stac_catalog_loaded", lambda: False)
+        assert TestClient(self._build_app()).get("/readyz").status_code == 200
+
+    def test_readyz_bypasses_auth_middleware(self, monkeypatch):
+        import server
+        from starlette.testclient import TestClient
+        monkeypatch.setattr(server, "_MCP_AUTH_TOKEN", "test-token")
+        monkeypatch.setattr(server, "_stac_catalog_loaded", lambda: True)
+        client = TestClient(self._build_app(with_auth_middleware=True))
+        assert client.get("/readyz").status_code == 200
 
     def test_healthz_route_registered(self):
         """After app construction, /healthz appears in the route table."""

@@ -12,7 +12,7 @@ from mcp.server.transport_security import TransportSecuritySettings
 from mcp.shared.session import BaseSession
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import JSONResponse
-from stac import STAC_DATASETS, STAC_LOAD_ERRORS, STAC_CATALOG_URL, list_datasets as _stac_list, get_dataset as _stac_get, get_collection as _stac_get_collection, public_catalog_url as _stac_public_catalog_url, start_periodic_refresh as _stac_start_periodic_refresh, discovery_enabled as _stac_discovery_enabled, default_catalog_token as _stac_default_catalog_token
+from stac import STAC_DATASETS, STAC_LOAD_ERRORS, STAC_CATALOG_URL, list_datasets as _stac_list, get_dataset as _stac_get, get_collection as _stac_get_collection, public_catalog_url as _stac_public_catalog_url, start_periodic_refresh as _stac_start_periodic_refresh, discovery_enabled as _stac_discovery_enabled, catalog_loaded as _stac_catalog_loaded, default_catalog_token as _stac_default_catalog_token
 
 # Workaround for https://github.com/SchmidtDSE/geo-query/issues/5
 # send_notification crashes with ClosedResourceError when the client disconnects
@@ -1259,9 +1259,9 @@ _PUBLIC_TILES = os.environ.get("MCP_AUTH_PUBLIC_TILES", "").strip().lower() in (
 
 class _BearerAuthMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request, call_next):
-        # /healthz must remain reachable to the kubelet probe even with auth on;
+        # /healthz and /readyz must remain reachable to the kubelet probes even with auth on;
         # /version is deliberately public too (version discovery is the whole point).
-        if request.url.path in ("/healthz", "/version"):
+        if request.url.path in ("/healthz", "/readyz", "/version"):
             return await call_next(request)
         if _PUBLIC_TILES and request.method == "GET" and request.url.path.startswith("/tiles/"):
             return await call_next(request)
@@ -1283,6 +1283,23 @@ async def _healthz(_request):
     # signal we want: a wedged pod becomes NotReady within ~15s and HAProxy
     # stops routing to it. See issue #157.
     return JSONResponse({"ok": True, "version": APP_VERSION})
+
+
+# A deployment that should keep taking traffic with no catalog, e.g. a mirror head
+# whose clients pass STAC entries inline during an outage, opts out of /readyz's
+# catalog check.
+_READY_WITHOUT_CATALOG = os.environ.get("STAC_READY_WITHOUT_CATALOG", "").strip().lower() in (
+    "1", "true", "yes", "on")
+
+
+async def _readyz(_request):
+    # Readiness, separate from liveness (#429). A pod that booted DEGRADED
+    # (STAC_ALLOW_DEGRADED_START) and still has no catalog stays alive, so its
+    # periodic refresh keeps retrying, but leaves the Service until it loads.
+    # Like /healthz, async and I/O-free, so a starved event loop also fails it.
+    if _READY_WITHOUT_CATALOG or _stac_catalog_loaded():
+        return JSONResponse({"ok": True, "version": APP_VERSION})
+    return JSONResponse({"ok": False, "reason": "STAC catalog not loaded"}, status_code=503)
 
 
 async def _version(_request):
@@ -1354,6 +1371,7 @@ if __name__ == "__main__":
     app.router.redirect_slashes = False
     mount_tiles(app)
     app.add_route("/healthz", _healthz, methods=["GET"])
+    app.add_route("/readyz", _readyz, methods=["GET"])
     app.add_route("/version", _version, methods=["GET"])
 
     _tokens = _auth_tokens()
