@@ -959,6 +959,30 @@ class TestTileRouteMounted:
             con.close()
 
 
+    def test_lock_heartbeat_writes_through_writer_when_split(self, tmp_path, monkeypatch):
+        """With a tile write key configured, the heartbeat writes lock.json on
+        a writer connection (it holds the only key for the tile bucket)."""
+        import server, time
+        from tiles.db import build_tile_connection
+        from tiles.pyramid import write_lock, read_lock
+        monkeypatch.setattr(server, "_LOCK_HEARTBEAT_SECONDS", 0.05)
+        monkeypatch.setenv("TILE_BUCKET_BASE", str(tmp_path))
+        monkeypatch.setenv("TILE_WRITE_KEY_ID", "test-key")
+        monkeypatch.setenv("TILE_WRITE_SECRET", "test-secret")
+        uri = str(tmp_path) + "/"
+        con = build_tile_connection(threads=1)
+        try:
+            write_lock(con, uri, pod_id="register", started_at=1234.0)
+            stop = server._start_lock_heartbeat(uri)
+            time.sleep(0.3)
+            stop()
+            time.sleep(0.1)
+            lock = read_lock(con, uri)
+            assert lock["started_at"] == 1234.0
+            assert lock["heartbeat_at"] > 1234.0
+        finally:
+            con.close()
+
 class TestHealthz:
     """The /healthz endpoint is the kubelet probe target (see issue #157).
     Replaces a TCP-only probe so a wedged uvicorn event loop fails fast."""

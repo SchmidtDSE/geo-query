@@ -9,12 +9,49 @@ import sys
 
 import duckdb
 
-from s3config import default_s3_secret_sql, source_secret_sql
+from s3config import default_endpoint, default_s3_secret_sql, infer_use_ssl, source_secret_sql, sql_quote
 from dbconfig import disable_persistent_secrets_sql, lock_down, memory_limit_sql, spill_sql
 
 
-def build_tile_connection(threads: int | None = None) -> duckdb.DuckDBPyConnection:
-    """Create a :memory: connection with extensions loaded and S3 configured.
+def tile_bucket_base() -> str:
+    return os.environ.get("TILE_BUCKET_BASE", "s3://public-output")
+
+
+def split_tile_writes() -> bool:
+    """True when a dedicated tile write key is configured (TILE_WRITE_KEY_ID).
+
+    Then caller SQL never runs on a connection that can write the tile bucket:
+    connections built by build_tile_connection() hold read credentials only, and
+    every write to TILE_BUCKET_BASE goes through build_tile_writer_connection(),
+    which never runs caller SQL. Private replicas that write tiles to a private
+    bucket set it. Unset, the default: one kind of connection does both, as on
+    the public deployments, whose tiles go anonymously to s3://public-output.
+    """
+    return bool(os.environ.get("TILE_WRITE_KEY_ID", "").strip())
+
+
+def tile_write_secret_sql() -> str:
+    """CREATE SECRET for the tile write key, scoped to TILE_BUCKET_BASE.
+
+    TILE_WRITE_KEY_ID / TILE_WRITE_SECRET hold the key. The endpoint is
+    TILE_WRITE_ENDPOINT (bare host), defaulting to the deployment default;
+    TILE_WRITE_USE_SSL overrides the inferred SSL setting. The key needs list,
+    read and write on the tile bucket: builds read back each level they write.
+    """
+    endpoint = os.environ.get("TILE_WRITE_ENDPOINT", "").strip() or default_endpoint()
+    use_ssl = (os.environ.get("TILE_WRITE_USE_SSL") or infer_use_ssl(endpoint)).strip().lower()
+    url_style = os.environ.get("TILE_WRITE_URL_STYLE", "path")
+    return (
+        "CREATE OR REPLACE SECRET tile_write ("
+        f"TYPE S3, KEY_ID '{sql_quote(os.environ.get('TILE_WRITE_KEY_ID', '').strip())}', "
+        f"SECRET '{sql_quote(os.environ.get('TILE_WRITE_SECRET', '').strip())}', "
+        f"ENDPOINT '{sql_quote(endpoint)}', URL_STYLE '{sql_quote(url_style)}', "
+        f"USE_SSL '{sql_quote(use_ssl)}', SCOPE '{sql_quote(tile_bucket_base())}')"
+    )
+
+
+def _base_tile_connection(threads: int | None) -> duckdb.DuckDBPyConnection:
+    """Create a :memory: connection with extensions loaded and tuned, no secrets yet.
 
     Extensions are pre-installed in the image (Dockerfile INSTALL step); LOAD is
     per-session. Dev environments must run the Dockerfile or manually INSTALL once.
@@ -76,7 +113,19 @@ def build_tile_connection(threads: int | None = None) -> duckdb.DuckDBPyConnecti
     # ~17-26% gain came entirely from the over-sharded case. Kept pending a
     # re-measure at 1-file/h0 (see benchmarks/s3-throughput-bench.py); drop if neutral.
     con.sql("SET prefetch_all_parquet_files=true")
+    return con
 
+
+def build_tile_connection(threads: int | None = None) -> duckdb.DuckDBPyConnection:
+    """A connection that may run caller SQL: tile serving, the prepare-phase
+    probes and the source side of a pyramid build.
+
+    It holds the deployment's read credentials (the default secret and the
+    registry sources). With split_tile_writes() it never holds the tile write
+    key; otherwise it also writes the tiles, anonymously or with whatever the
+    registry grants, as it always has.
+    """
+    con = _base_tile_connection(threads)
     # S3 access: the deployment default endpoint (S3_DEFAULT_ENDPOINT, same env
     # surface as the query tool — #268/#271). Previously hardcoded to the
     # cluster-internal Ceph endpoint, which broke hex tiles (source reads AND
@@ -88,7 +137,25 @@ def build_tile_connection(threads: int | None = None) -> duckdb.DuckDBPyConnecti
     for stmt in source_secret_sql():
         con.sql(stmt)
     # Last: register_hex_tiles runs caller SQL here too, so no local file access
-    # (NRP incident 2026-11-06). A local TILE_BUCKET_BASE (tests) stays writable.
-    tile_base = os.environ.get("TILE_BUCKET_BASE", "s3://public-output")
-    lock_down(con, extra_dirs=(tile_base,))
+    # (NRP incident 2026-11-06). A local TILE_BUCKET_BASE (tests) stays reachable
+    # so tiles can be served from it. On S3, what this connection may write is
+    # decided by its credentials: with split_tile_writes() it has no write key.
+    lock_down(con, extra_dirs=(tile_bucket_base(),))
+    return con
+
+
+def build_tile_writer_connection(threads: int | None = None) -> duckdb.DuckDBPyConnection:
+    """A connection for writing the tile bucket. It must never run caller SQL.
+
+    Without split_tile_writes() this is build_tile_connection(), so public
+    deployments keep one kind of connection. With it, the connection holds only
+    the tile write key, scoped to TILE_BUCKET_BASE: it writes the pyramid
+    (streamed from a source connection), reads back the levels it wrote, and
+    writes metadata and the lock and failure markers.
+    """
+    if not split_tile_writes():
+        return build_tile_connection(threads)
+    con = _base_tile_connection(threads)
+    con.sql(tile_write_secret_sql())
+    lock_down(con, extra_dirs=(tile_bucket_base(),))
     return con

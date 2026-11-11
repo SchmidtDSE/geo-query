@@ -289,6 +289,8 @@ pytest --cov=. tests/
 - `MCP_AUTH_TOKEN` - a single bearer token, named `default`; older deployments use this
 - `MCP_AUTH_PUBLIC_TILES` - `true` serves `GET /tiles/...` without a token (default: off)
 - `S3_ALLOWED_ENDPOINTS` - extra hosts accepted as the `query` tool's `s3_endpoint`, comma-separated
+- `TILE_BUCKET_BASE` - where `register_hex_tiles` writes tile pyramids (default: `s3://public-output`)
+- `TILE_WRITE_KEY_ID`, `TILE_WRITE_SECRET` - a key that writes only the tile bucket, for private replicas (see [Private hex tiles](#private-hex-tiles)); `TILE_WRITE_ENDPOINT` and `TILE_WRITE_USE_SSL` set its endpoint when it is not the default one
 
 ### DuckDB Settings
 
@@ -341,6 +343,15 @@ The server makes the injected keys a DuckDB secret for that query only, then des
 | Credentials in server logs | `CREATE SECRET` statements are constructed internally and never written to stderr |
 | Credentials in transit | All traffic is TLS-terminated at the ingress |
 | Credential persistence | `stateless_http=True` — no session state survives between requests |
+
+### Private hex tiles
+
+On the public servers, hex tiles go to `s3://public-output`, which accepts anonymous writes, and caller SQL may also write there (csv exports). A private replica writes its tiles to a private bucket instead, which needs a key with write access. To keep that key away from caller SQL, give the replica two keys:
+
+- a read-only key in `S3_SOURCES`, used by `query`, by tile serving and by the source side of a tile build;
+- a key that can list, read and write only the tile bucket, in `TILE_WRITE_KEY_ID` and `TILE_WRITE_SECRET`, with `TILE_BUCKET_BASE` set to that bucket.
+
+With a write key set, a tile build uses two connections. One runs the caller's SQL with read credentials and aggregates it to the finest resolution. The result streams in Arrow batches to the other, which holds only the write key and never runs caller SQL; it writes that level, builds the coarser ones from the bucket, and writes the metadata and the build's lock and failure markers. Without a write key, builds run on one connection as they always have.
 
 ### Deploying private apps without a separate server
 

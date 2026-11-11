@@ -30,6 +30,31 @@ MVT_LAYER_NAME = "layer"
 _LOCK_STALE_SECONDS = int(os.environ.get("TILE_LOCK_STALE_SECONDS", "120"))
 
 
+def _ident(name: str) -> str:
+    """Quote a column name from caller SQL as a DuckDB identifier.
+
+    Column names come from the caller and are pasted into statements the
+    server runs, including on the tile writer connection, so an embedded
+    double quote must not end the identifier."""
+    return '"' + name.replace('"', '""') + '"'
+
+
+def _phase_1_select(user_sql: str, qh: str, phase1_values: str, finest_res: int) -> str:
+    """The SELECT inside phase 1: caller SQL aggregated to the finest level."""
+    return (
+        f"  WITH src AS (\n"
+        f"    SELECT *, CAST(h3_cell_to_parent({qh}, 0) AS BIGINT) AS h0\n"
+        f"    FROM (\n{user_sql}\n    )\n"
+        f"  )\n"
+        f"  SELECT {qh} AS h,\n"
+        f"         h0,\n"
+        f"         {phase1_values},\n"
+        f"         {finest_res} AS res\n"
+        f"  FROM src\n"
+        f"  GROUP BY 1, 2"
+    )
+
+
 def build_pyramid_statements(
     user_sql: str,
     finest_res: int,
@@ -74,7 +99,7 @@ def build_pyramid_statements(
             "(or use agg='COUNT')"
         )
 
-    qh = f'"{h3_column}"'
+    qh = _ident(h3_column)
 
     # Per-agg expressions at finest (Phase 1, aggregating raw source rows)
     # and at parent levels (Phase 2, rolling up the previous resolution).
@@ -82,14 +107,14 @@ def build_pyramid_statements(
         phase1_values = "COUNT(*) AS count"
         phase2_values = "SUM(count) AS count"
     elif agg_upper == "SUM":
-        phase1_values = ", ".join(f'SUM("{c}") AS "{c}"' for c in value_columns)
-        phase2_values = ", ".join(f'SUM("{c}") AS "{c}"' for c in value_columns)
+        phase1_values = ", ".join(f'SUM({_ident(c)}) AS {_ident(c)}' for c in value_columns)
+        phase2_values = ", ".join(f'SUM({_ident(c)}) AS {_ident(c)}' for c in value_columns)
     elif agg_upper == "MIN":
-        phase1_values = ", ".join(f'MIN("{c}") AS "{c}"' for c in value_columns)
-        phase2_values = ", ".join(f'MIN("{c}") AS "{c}"' for c in value_columns)
+        phase1_values = ", ".join(f'MIN({_ident(c)}) AS {_ident(c)}' for c in value_columns)
+        phase2_values = ", ".join(f'MIN({_ident(c)}) AS {_ident(c)}' for c in value_columns)
     elif agg_upper == "MAX":
-        phase1_values = ", ".join(f'MAX("{c}") AS "{c}"' for c in value_columns)
-        phase2_values = ", ".join(f'MAX("{c}") AS "{c}"' for c in value_columns)
+        phase1_values = ", ".join(f'MAX({_ident(c)}) AS {_ident(c)}' for c in value_columns)
+        phase2_values = ", ".join(f'MAX({_ident(c)}) AS {_ident(c)}' for c in value_columns)
     elif agg_upper == "COUNT_DISTINCT":
         # Distinct-count per hex (e.g. species richness). NOT re-aggregatable:
         # a parent's distinct count can't be derived from its children's counts
@@ -97,23 +122,23 @@ def build_pyramid_statements(
         # the finest level; parents use MAX as a defensible lower bound.
         # Phase 1: exact distinct count of each key column, grouped by (h, h0).
         phase1_values = ", ".join(
-            f'COUNT(DISTINCT "{c}") AS "{c}"' for c in value_columns
+            f'COUNT(DISTINCT {_ident(c)}) AS {_ident(c)}' for c in value_columns
         )
         # Phase 2: MAX up the pyramid. A parent's true richness is >= its
         # largest child, so MAX never overstates (unlike SUM, which would
         # double-count keys shared across siblings) — a lower bound at coarse
         # zoom. See render_recipe / value_stats note and h3-guide.md.
-        phase2_values = ", ".join(f'MAX("{c}") AS "{c}"' for c in value_columns)
+        phase2_values = ", ".join(f'MAX({_ident(c)}) AS {_ident(c)}' for c in value_columns)
     else:  # AVG
         # Phase 1: average raw source rows + carry COUNT for weighted parents.
         phase1_values = (
-            ", ".join(f'AVG("{c}") AS "{c}"' for c in value_columns)
+            ", ".join(f'AVG({_ident(c)}) AS {_ident(c)}' for c in value_columns)
             + ", COUNT(*) AS __pyramid_weight"
         )
         # Phase 2: weighted average = SUM(v*weight) / SUM(weight). Propagate weight.
         phase2_values = (
             ", ".join(
-                f'SUM("{c}" * __pyramid_weight) / SUM(__pyramid_weight) AS "{c}"' for c in value_columns
+                f'SUM({_ident(c)} * __pyramid_weight) / SUM(__pyramid_weight) AS {_ident(c)}' for c in value_columns
             )
             + ", SUM(__pyramid_weight) AS __pyramid_weight"
         )
@@ -121,17 +146,8 @@ def build_pyramid_statements(
     # Phase 1: scan user_sql, derive h0 once in the src CTE, aggregate at finest.
     phase_1 = (
         "COPY (\n"
-        f"  WITH src AS (\n"
-        f"    SELECT *, CAST(h3_cell_to_parent({qh}, 0) AS BIGINT) AS h0\n"
-        f"    FROM (\n{user_sql}\n    )\n"
-        f"  )\n"
-        f"  SELECT {qh} AS h,\n"
-        f"         h0,\n"
-        f"         {phase1_values},\n"
-        f"         {finest_res} AS res\n"
-        f"  FROM src\n"
-        f"  GROUP BY 1, 2\n"
-        f") TO '{output_uri}' "
+        + _phase_1_select(user_sql, qh, phase1_values, finest_res)
+        + f"\n) TO '{output_uri}' "
         f"(FORMAT PARQUET, PARTITION_BY (res, h0), OVERWRITE_OR_IGNORE)"
     )
 
@@ -512,7 +528,7 @@ def prepare_hex_tiles(
         # Read one cell from the user SQL and ask H3 what its resolution is.
         # Avoids forcing the LLM to invent a finest_res — the data already knows.
         probe = con.sql(
-            f'SELECT h3_get_resolution("{h3_column}") FROM ({sql}) LIMIT 1'
+            f'SELECT h3_get_resolution({_ident(h3_column)}) FROM ({sql}) LIMIT 1'
         ).fetchone()
         if probe is None or probe[0] is None:
             raise ValueError(
@@ -561,7 +577,41 @@ def prepare_hex_tiles(
     }
 
 
-def build_hex_tiles(con: duckdb.DuckDBPyConnection, plan: dict) -> dict:
+def _stream_phase_1(con, writer_con, phase_1: str, output_uri: str) -> None:
+    """Run phase 1 across two connections: `con` runs the caller's SQL and
+    aggregates it, and `writer_con` writes the result to `output_uri`.
+
+    The aggregate streams between them as Arrow record batches, so caller SQL
+    never runs on the connection holding the tile write key, and nothing is
+    staged on local disk. DuckDB reads a Python Arrow stream on one thread,
+    so this write is less parallel than the single-connection COPY; the
+    aggregation itself (the costly part) still runs fully parallel on `con`.
+    """
+    head = "COPY (\n"
+    tail = f"\n) TO '{output_uri}' "
+    cut = phase_1.rindex(tail)
+    assert phase_1.startswith(head), "unexpected phase 1 statement shape"
+    select_sql, copy_options = phase_1[len(head):cut], phase_1[cut + len(tail):]
+    reader = con.sql(select_sql).to_arrow_reader(_PHASE_1_BATCH_ROWS)
+    view = "__pyramid_phase_1"
+    writer_con.register(view, reader)
+    try:
+        writer_con.sql(f"COPY (SELECT * FROM {view}) TO '{output_uri}' {copy_options}")
+    finally:
+        writer_con.unregister(view)
+        reader.close()
+
+
+# Rows per Arrow batch in a streamed phase 1. Large enough that per-batch
+# overhead is negligible, small enough to keep the handoff's memory modest.
+_PHASE_1_BATCH_ROWS = 1_000_000
+
+
+def build_hex_tiles(
+    con: duckdb.DuckDBPyConnection,
+    plan: dict,
+    writer_con: duckdb.DuckDBPyConnection | None = None,
+) -> dict:
     """Run the COPY, compute per-resolution stats and bounds, and write
     metadata.json. Returns the same shape as register_hex_tiles minus
     cache_hit (caller decides whether to add that key).
@@ -570,7 +620,15 @@ def build_hex_tiles(con: duckdb.DuckDBPyConnection, plan: dict) -> dict:
     SHOULD be exclusive to this build — DuckDB serialises queries on a
     connection, so sharing a connection with other writers will block them
     for the duration of the COPY.
+
+    With `writer_con` (deployments with a tile write key, see
+    tiles.db.split_tile_writes), `con` only runs the caller's SQL and every
+    write and read-back of the tile bucket happens on `writer_con`, which
+    never runs caller SQL. Without it, `con` does everything, as before.
     """
+    source_con = con
+    if writer_con is not None:
+        con = writer_con
     sql = plan["sql"]
     agg = plan["agg"]
     finest_res = plan["finest_res"]
@@ -606,7 +664,10 @@ def build_hex_tiles(con: duckdb.DuckDBPyConnection, plan: dict) -> dict:
 
     # Phase 1 always: materialize the finest resolution (the pyramid's base level).
     s0 = time.perf_counter()
-    con.sql(statements[0])
+    if writer_con is not None:
+        _stream_phase_1(source_con, writer_con, statements[0], output_uri)
+    else:
+        con.sql(statements[0])
     dt = time.perf_counter() - s0
     copy_seconds += dt
     print(f"[tile-build] hash={h} phase=1 res={finest_res} copy={dt:.1f}s", file=sys.stderr)
@@ -645,7 +706,7 @@ def build_hex_tiles(con: duckdb.DuckDBPyConnection, plan: dict) -> dict:
             # log-scale suggestion below (#238).
             uri = f"{output_uri}res={res}/**/*.parquet"
             row = con.sql(
-                f'SELECT MIN("{col}") AS mn, MAX("{col}") AS mx, AVG("{col}") AS av '
+                f'SELECT MIN({_ident(col)}) AS mn, MAX({_ident(col)}) AS mx, AVG({_ident(col)}) AS av '
                 f"FROM read_parquet('{uri}')"
             ).fetchone()
             by_res[str(res)] = {
