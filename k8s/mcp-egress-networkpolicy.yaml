@@ -12,9 +12,10 @@
 # Switch a server to the external endpoint before adding it to this selector,
 # or it loses Ceph. Egress only: these policies set no ingress rules.
 #
-# Manifests of the selected servers: duckdb-mcp and dev-duckdb-mcp in this repo;
-# ca30x30-mcp in boettiger-lab/ca-30x30, wyoming-mcp in boettiger-lab/wyoming,
-# sdm-mcp in boettiger-lab/hexsdm.
+# Manifests of the selected servers: duckdb-mcp and dev-duckdb-mcp in this repo,
+# wyoming-mcp in boettiger-lab/wyoming. Other apps' MCP servers keep their egress
+# policy in their own repo (ca30x30-mcp in boettiger-lab/ca-30x30, sdm-mcp in
+# SchmidtDSE/hexsdm).
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -28,9 +29,7 @@ spec:
       values:
       - duckdb-mcp
       - dev-duckdb-mcp
-      - ca30x30-mcp
       - wyoming-mcp
-      - sdm-mcp
   policyTypes:
   - Egress
   egress:
@@ -67,29 +66,6 @@ spec:
         - ::1/128
     ports:
     - port: 443
-      protocol: TCP
----
-# ca30x30-mcp reads its STAC catalog from the ca-30x30 app's nginx in-cluster.
-# Apply only together with mcp-egress above: alone, it would limit this pod's
-# egress to the catalog.
-apiVersion: networking.k8s.io/v1
-kind: NetworkPolicy
-metadata:
-  name: mcp-egress-ca30x30-catalog
-  namespace: biodiversity
-spec:
-  podSelector:
-    matchLabels:
-      app: ca30x30-mcp
-  policyTypes:
-  - Egress
-  egress:
-  - to:
-    - podSelector:
-        matchLabels:
-          app: ca-30x30
-    ports:
-    - port: 80
       protocol: TCP
 ---
 # wyoming-mcp reads its STAC catalog from the wyoming app's nginx listener on
