@@ -299,6 +299,7 @@ pytest --cov=. tests/
 - `MCP_AUTH_TOKENS_DIR` - directory of bearer tokens, one file per caller, named for it (see [Authentication](#authentication))
 - `MCP_AUTH_TOKEN` - a single bearer token, named `default`; older deployments use this
 - `MCP_AUTH_PUBLIC_TILES` - `true` serves `GET /tiles/...` without a token (default: off)
+- `MCP_ALLOWED_HOSTS`, `MCP_ALLOWED_ORIGINS` - turn on DNS-rebinding protection for `/mcp`, comma-separated (see [Running on localhost](#running-on-localhost))
 - `S3_ALLOWED_ENDPOINTS` - extra hosts accepted as the `query` tool's `s3_endpoint`, comma-separated
 - `TILE_BUCKET_BASE` - where `register_hex_tiles` writes tile pyramids (default: `s3://public-output`)
 - `TILE_WRITE_KEY_ID`, `TILE_WRITE_SECRET` - a key that writes only the tile bucket, for private replicas (see [Private hex tiles](#private-hex-tiles)); `TILE_WRITE_ENDPOINT` and `TILE_WRITE_USE_SSL` set its endpoint when it is not the default one
@@ -415,6 +416,27 @@ server's Service; the request times out. Such an app uses a server in its own
 namespace, as the `schmidtdse` apps do (next section), or the public endpoint
 when there is one. An app that calls the public endpoint keeps its token in a
 Secret `duckdb-mcp-auth`, key `MCP_AUTH_TOKEN`, in its own namespace.
+
+### Running on localhost
+
+A server on someone's own machine should check the Host and Origin of each
+request. Without the check, a web page can re-point its own hostname at
+127.0.0.1 (DNS rebinding), and the browser will then let it call the local
+server and read the results. Setting `MCP_ALLOWED_HOSTS` turns the check on for
+`/mcp`: a request whose Host is not listed gets 421, and a request from a browser
+page whose Origin is not listed gets 403. Clients that send no Origin, such as
+scripts and the headless runner, pass. `host:*` matches any port. For a server
+behind an nginx on port 8080 that forwards `Host $host`:
+
+```
+MCP_ALLOWED_HOSTS=localhost,127.0.0.1
+MCP_ALLOWED_ORIGINS=http://localhost:8080,http://127.0.0.1:8080
+```
+
+With neither variable set the check is off, as the public deployments need: they
+are reached from any origin, under hostnames the ingress picks. Setting only
+`MCP_ALLOWED_ORIGINS` stops the server at startup, because with no allowed hosts
+every request would be refused.
 
 ### The schmidtdse server
 
