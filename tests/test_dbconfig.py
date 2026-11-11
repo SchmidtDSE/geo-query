@@ -92,10 +92,11 @@ class TestMaxTempDirectorySize:
         monkeypatch.setenv("DUCKDB_MAX_TEMP_DIRECTORY_SIZE", "10GiB")
         assert duckdb_max_temp_directory_size() == "10GiB"
 
-    def test_pod_limit_is_half_in_mib(self, monkeypatch):
-        # The NRP namespace default: 50Gi → 25 GiB per connection.
+    def test_pod_limit_is_seventy_percent_in_mib(self, monkeypatch):
+        # The NRP namespace default: 50Gi → 35 GiB per connection, a backstop
+        # under spillguard's pod-wide limit (#428).
         monkeypatch.setenv("POD_EPHEMERAL_LIMIT", str(50 * 2**30))
-        assert duckdb_max_temp_directory_size() == f"{25 * 1024}MiB"
+        assert duckdb_max_temp_directory_size() == f"{35 * 1024}MiB"
 
     def test_unparseable_falls_back_to_none(self, monkeypatch, capsys):
         monkeypatch.setenv("POD_EPHEMERAL_LIMIT", "lots")
@@ -115,7 +116,7 @@ class TestSpillSql:
         monkeypatch.setenv("POD_EPHEMERAL_LIMIT", "2Gi")
         tmp, cap = spill_sql()
         assert tmp.startswith("SET temp_directory='/scratch/duckdb-")
-        assert cap == "SET max_temp_directory_size='1024MiB'"
+        assert cap == "SET max_temp_directory_size='1433MiB'"
 
 
 # Real DuckDB, tiny limits: a sort of ~10M md5 strings under a 64MB memory_limit

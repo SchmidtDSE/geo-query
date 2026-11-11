@@ -11,6 +11,7 @@ import duckdb
 
 from s3config import default_endpoint, default_s3_secret_sql, infer_use_ssl, source_secret_sql, sql_quote
 from dbconfig import disable_persistent_secrets_sql, lock_down, memory_limit_sql, spill_sql
+from spillguard import GUARD
 
 
 def tile_bucket_base() -> str:
@@ -98,6 +99,9 @@ def _base_tile_connection(threads: int | None) -> duckdb.DuckDBPyConnection:
             con.sql(stmt)
         except Exception as e:
             print(f"⚠️ tile spill setup skipped: {stmt!r}: {e}", file=sys.stderr)
+    # Pod-wide spill guard (#428): a pyramid build that spills too much is
+    # interrupted like a query. Held weakly, so closing the connection is enough.
+    GUARD.register(con)
 
     # httpfs read tuning. NOTE: the "~126 files per h0 / ~923 files" figure behind
     # the original #190 characterization was a since-fixed GBIF over-sharding bug,
