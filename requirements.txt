@@ -16,6 +16,11 @@ duckdb==1.5.4
 # Also: an unpinned pandas can differ between the image dev validated and the image
 # a release tag rebuilds, which is unverifiable drift in a promotion (#366).
 pandas==3.0.5
+# The tile build streams phase 1 between two DuckDB connections as Arrow record
+# batches when a tile write key is set (tiles/pyramid.py _stream_phase_1);
+# DuckDB's Python Arrow interface needs pyarrow. Pinned like the rest of the
+# data stack so a release retag can't drift.
+pyarrow==25.0.1
 uvicorn
 tabulate
 pystac

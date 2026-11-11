@@ -782,6 +782,8 @@ def _submit_build(plan: dict) -> concurrent.futures.Future:
             t0 = time.perf_counter()
             stop_heartbeat = _start_lock_heartbeat(plan["output_uri"])
             try:
+                if writer_con is None:
+                    return build_hex_tiles(build_con, plan)
                 return build_hex_tiles(build_con, plan, writer_con=writer_con)
             except Exception as exc:
                 print(
