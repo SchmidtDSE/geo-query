@@ -1,0 +1,31 @@
+{
+  "type": "Catalog",
+  "stac_version": "1.1.0",
+  "id": "portolan-example",
+  "description": "A Portolan-shaped catalog for tests: relative hrefs, no self link, theme catalogs between the root and its collections, child links without ids, a collection reachable from two catalogs, and two collections whose ids end in the same segment.",
+  "links": [
+    {
+      "rel": "root",
+      "href": "./catalog.json",
+      "type": "application/json"
+    },
+    {
+      "rel": "child",
+      "href": "./government/catalog.json",
+      "type": "application/json",
+      "title": "Government"
+    },
+    {
+      "rel": "child",
+      "href": "./elections/catalog.json",
+      "type": "application/json",
+      "title": "Elections"
+    },
+    {
+      "rel": "child",
+      "href": "./missing/catalog.json",
+      "type": "application/json",
+      "title": "A child that is not there"
+    }
+  ]
+}

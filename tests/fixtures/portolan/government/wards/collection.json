@@ -1,0 +1,19 @@
+{
+  "type": "Collection",
+  "stac_version": "1.1.0",
+  "id": "government/wards",
+  "title": "Ward Boundaries (2020)",
+  "description": "Ward boundaries.",
+  "license": "other",
+  "extent": { "spatial": { "bbox": [[-90.32, 38.53, -90.17, 38.77]] }, "temporal": { "interval": [[null, null]] } },
+  "links": [
+    { "rel": "root", "href": "../../catalog.json", "type": "application/json" },
+    { "rel": "parent", "href": "../catalog.json", "type": "application/json" },
+    { "rel": "describedby", "href": "./README.md", "type": "text/markdown" }
+  ],
+  "assets": {
+    "wards": { "href": "./wards.parquet", "type": "application/vnd.apache.parquet", "title": "Ward Boundaries (2020) (GeoParquet)", "roles": ["data"] },
+    "wards-tiles": { "href": "./wards.pmtiles", "type": "application/vnd.pmtiles", "roles": ["visual"] }
+  },
+  "table:columns": [{ "name": "name", "type": "string" }, { "name": "population", "type": "int32" }]
+}
