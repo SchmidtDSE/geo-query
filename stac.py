@@ -650,6 +650,9 @@ def _assemble(root_key: str, nodes: dict, kids_of: dict):
             obj = nodes[k]
             if obj.id in datasets:
                 print(f"⚠️ Duplicate STAC id {obj.id!r} at {k}; keeping the first", file=sys.stderr)
+                # Skip the node, not its subtree: a duplicate group's datasets
+                # still list, at the depth the group would have had.
+                visit(k, depth)
                 continue
             sub = kids(k)
             if sub:

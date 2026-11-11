@@ -194,6 +194,22 @@ def test_inline_catalog_nests_to_any_depth():
     assert "    - **leaf**" in out
 
 
+
+def test_duplicate_group_id_keeps_its_datasets():
+    def leaf(i):
+        return {"id": i, "title": i, "assets": {"d": {
+            "href": f"https://x.org/{i}.parquet", "type": "application/vnd.apache.parquet"}}}
+    catalog = {"id": "c", "children": [
+        {"type": "Catalog", "id": "hawaii", "children": [leaf("coral-reefs")]},
+        {"type": "Catalog", "id": "coral-reefs", "children": [leaf("reef-a"), leaf("reef-b")]},
+    ]}
+    out = stac.list_datasets(catalog=catalog)
+    assert "# Available Datasets (3 datasets in 1 group)" in out
+    assert "\n- **reef-a**" in out and "\n- **reef-b**" in out
+    datasets, _index = stac._render_inline_catalog(catalog)
+    for i in ("reef-a", "reef-b"):
+        assert stac._lookup(datasets, i)[0] is not None
+
 # --- No network beyond the documents themselves ---------------------------------
 
 def test_root_link_to_another_host_is_never_fetched(tmp_path):
