@@ -203,6 +203,13 @@ The deployment:
 - Runs multiple replicas for high availability (prod: 6, dev: 2)
 - Allocates up to 160 Gi memory / 16 CPU per pod for large queries
 - Bakes the application code and dependencies into the image (no runtime clone)
+- Guards spill disk pod-wide. Each query spills to its own directory, and a
+  watchdog measures them all against the pod's ephemeral-storage limit
+  (`POD_EPHEMERAL_LIMIT`). At half the limit (`SPILL_DRAIN_FRACTION`) the pod
+  fails `/readyz` and turns new queries away with a retry message, so they go to
+  other replicas. At 85% (`SPILL_INTERRUPT_FRACTION`) it interrupts the query
+  with the largest spill, which fails with an error rather than the kubelet
+  evicting the pod.
 - Includes `/healthz` (liveness) and `/readyz` (readiness) probes for safe
   rollouts. `/readyz` also fails while the pod has no STAC catalog, so a pod
   that booted with `STAC_ALLOW_DEGRADED_START` leaves the Service until its

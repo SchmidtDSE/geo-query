@@ -26,11 +26,14 @@ _MEMORY_LIMIT_FRACTION = 0.8
 # error. Unset, DuckDB defaults to 90% of the *node's* free disk — it cannot see
 # the container limit (50Gi on NRP, a namespace LimitRange default), so a big
 # spill ran past it and the kubelet evicted the pod: #270's spill-not-OOM traded
-# an OOM kill for an eviction with the same blast radius (#423). The cap is
-# per-instance, not pod-wide (every query and tile build is its own DuckDB), and
-# the same limit also counts logs and the container's writable layer — hence
-# half, not 80%: one runaway spill is contained with room to spare.
-_TEMP_DIRECTORY_FRACTION = 0.5
+# an OOM kill for an eviction with the same blast radius (#423).
+#
+# The cap is per instance, and DuckDB's count runs ~30% under the bytes on disk,
+# so it is a backstop: 0.7 is ~91% of the limit on disk. The pod-wide total is
+# spillguard's job (#428), which drains the replica and interrupts the largest
+# spill before the kubelet would evict it, so one query alone can use most of the
+# pod's space.
+_TEMP_DIRECTORY_FRACTION = 0.7
 
 # SI (10^3) and binary (2^10) byte units, plus the k8s "Ki/Mi/Gi/Ti" quantities.
 _BYTE_UNITS = {

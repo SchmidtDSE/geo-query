@@ -1,4 +1,5 @@
 from auth import CALLER, caller_label, load_tokens, match_token
+from spillguard import GUARD as SPILL_GUARD, BUSY_MESSAGE as SPILL_BUSY_MESSAGE, INTERRUPTED_MESSAGE as SPILL_INTERRUPTED_MESSAGE
 import os
 import re
 import socket
@@ -374,7 +375,11 @@ def get_isolated_db(s3_key: str = None, s3_secret: str = None, s3_endpoint: str 
                 print(f"⚠️ Default S3 secret setup skipped: {e}", file=sys.stderr)
         # Last: no local file access for caller SQL (NRP incident 2026-11-06).
         lock_down(conn)
-        yield conn
+        spill_dir = SPILL_GUARD.register(conn)
+        try:
+            yield conn
+        finally:
+            SPILL_GUARD.unregister(spill_dir)
     finally:
         conn.close()
 
@@ -488,8 +493,14 @@ def query(sql_query: str, s3_key: str = None, s3_secret: str = None, s3_endpoint
     # proxy injected for this query. The secrets belong to the deployment.
     if SECRET_FUNCTIONS.search(sql_query):
         return "SQL Error: duckdb_secrets() and which_secret() are not available here: the S3 secrets belong to the deployment."
+    # Spill disk is short on this replica (#428): run nothing, so the retry lands
+    # on another replica while /readyz takes this one out of the Service.
+    if SPILL_GUARD.under_pressure():
+        return SPILL_BUSY_MESSAGE
+    spill_dir = None
     try:
         with get_isolated_db(s3_key=s3_key, s3_secret=s3_secret, s3_endpoint=s3_endpoint, s3_scope=s3_scope, s3_region=s3_region, s3_url_style=s3_url_style) as db:
+            spill_dir = db.sql("SELECT current_setting('temp_directory')").fetchone()[0]
             result = db.sql(sql_query)
             if result is None: return "Command executed successfully."
 
@@ -583,6 +594,8 @@ def query(sql_query: str, s3_key: str = None, s3_secret: str = None, s3_endpoint
             return redact_credentials(md, (s3_key, s3_secret))
 
     except Exception as e:
+        if isinstance(e, duckdb.InterruptException) and SPILL_GUARD.was_interrupted(spill_dir):
+            return SPILL_INTERRUPTED_MESSAGE
         # An S3 error can repeat the request's key ID (InvalidAccessKeyId,
         # SignatureDoesNotMatch), and this text goes back to the model.
         msg = redact_credentials(str(e), (s3_key, s3_secret))
@@ -1297,6 +1310,10 @@ async def _readyz(_request):
     # (STAC_ALLOW_DEGRADED_START) and still has no catalog stays alive, so its
     # periodic refresh keeps retrying, but leaves the Service until it loads.
     # Like /healthz, async and I/O-free, so a starved event loop also fails it.
+    # Also out of the Service while spill disk is short (#428), so new queries go
+    # to other replicas instead of pushing this one into eviction.
+    if SPILL_GUARD.under_pressure():
+        return JSONResponse({"ok": False, "reason": "spill disk under pressure"}, status_code=503)
     if _READY_WITHOUT_CATALOG or _stac_catalog_loaded():
         return JSONResponse({"ok": True, "version": APP_VERSION})
     return JSONResponse({"ok": False, "reason": "STAC catalog not loaded"}, status_code=503)
@@ -1411,6 +1428,7 @@ if __name__ == "__main__":
     # (new dataset OR new asset on an existing collection) becomes visible within
     # one refresh interval instead of the pod's lifetime (#337).
     _stac_start_periodic_refresh()
+    SPILL_GUARD.start()
     uvicorn.run(
         app,
         host="0.0.0.0",

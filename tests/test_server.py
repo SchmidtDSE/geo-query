@@ -1013,6 +1013,15 @@ class TestHealthz:
         assert r.status_code == 503 and r.json()["ok"] is False
         assert client.get("/healthz").status_code == 200
 
+    def test_readyz_fails_under_spill_pressure(self, monkeypatch):
+        """A replica short of spill disk leaves the Service (#428)."""
+        import server
+        from starlette.testclient import TestClient
+        monkeypatch.setattr(server, "_stac_catalog_loaded", lambda: True)
+        monkeypatch.setattr(server.SPILL_GUARD, "under_pressure", lambda: True)
+        r = TestClient(self._build_app()).get("/readyz")
+        assert r.status_code == 503 and "spill" in r.json()["reason"]
+
     def test_readyz_opt_out_serves_without_a_catalog(self, monkeypatch):
         import server
         from starlette.testclient import TestClient
@@ -1901,3 +1910,47 @@ class TestDiscoveryIsOptOutPerDeployment:
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
+
+
+
+class TestSpillGuardInQuery:
+    """The query tool's side of the pod-wide spill guard (#428)."""
+
+    def test_busy_replica_runs_nothing(self, monkeypatch):
+        import server
+        monkeypatch.setattr(server.SPILL_GUARD, "under_pressure", lambda: True)
+        monkeypatch.setattr(server, "get_isolated_db",
+                            lambda **kw: pytest.fail("a busy replica must not open DuckDB"))
+        assert server.query("SELECT 1") == server.SPILL_BUSY_MESSAGE
+
+    def test_guard_interrupt_gets_its_own_message(self, monkeypatch):
+        """An InterruptException from a connection the guard stopped tells the
+        model why, instead of a bare 'Interrupted!'."""
+        import contextlib
+        import duckdb
+        import server
+        monkeypatch.setattr(server.SPILL_GUARD, "under_pressure", lambda: False)
+        stopped, guard_stops = set(), [True]
+        monkeypatch.setattr(server.SPILL_GUARD, "was_interrupted", lambda d: d in stopped)
+        real = server.get_isolated_db
+
+        @contextlib.contextmanager
+        def wrapped(**kw):
+            with real(**kw) as db:
+                class Proxy:
+                    def sql(self, q):
+                        if q.startswith("SELECT current_setting"):
+                            if guard_stops[0]:
+                                stopped.add(db.sql(q).fetchone()[0])
+                            return db.sql(q)
+                        raise duckdb.InterruptException("INTERRUPT Error: Interrupted!")
+                yield Proxy()
+        monkeypatch.setattr(server, "get_isolated_db", wrapped)
+        assert server.query("SELECT 1") == server.SPILL_INTERRUPTED_MESSAGE
+        guard_stops[0] = False  # an interrupt the guard didn't make reads as a plain error
+        assert server.query("SELECT 1").startswith("SQL Error:")
+
+    def test_other_errors_are_unchanged(self, monkeypatch):
+        import server
+        monkeypatch.setattr(server.SPILL_GUARD, "under_pressure", lambda: False)
+        assert server.query("SELEC 1").startswith("SQL Error:")
