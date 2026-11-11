@@ -1,0 +1,43 @@
+# Public route to the schmidtdse server for headless callers outside the cluster,
+# such as CI, each with its own named key in duckdb-mcp-tokens. The server
+# rejects any request to /mcp without a valid key; /version is public by design.
+#
+# Apps don't use this route: they proxy to the in-cluster Service.
+# Only /mcp and /version are routed. /tiles/ is not, because tile URLs point at
+# the in-cluster address that only the apps rewrite. No CORS: browsers have no
+# business calling this host directly.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: geo-query-ingress
+  namespace: schmidtdse
+  annotations:
+    haproxy-ingress.github.io/balance-algorithm: leastconn
+    # Per client IP.
+    haproxy-ingress.github.io/limit-rps: "2"
+    haproxy-ingress.github.io/limit-connections: "10"
+    haproxy-ingress.github.io/timeout-client: "600s"
+    haproxy-ingress.github.io/timeout-server: "600s"
+spec:
+  ingressClassName: haproxy
+  tls:
+    - hosts:
+        - geo-query.nrp-nautilus.io
+  rules:
+    - host: geo-query.nrp-nautilus.io
+      http:
+        paths:
+          - path: /mcp
+            pathType: Exact
+            backend:
+              service:
+                name: duckdb-mcp
+                port:
+                  number: 8000
+          - path: /version
+            pathType: Exact
+            backend:
+              service:
+                name: duckdb-mcp
+                port:
+                  number: 8000

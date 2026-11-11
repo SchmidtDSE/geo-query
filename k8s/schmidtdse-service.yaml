@@ -1,5 +1,7 @@
-# In-cluster only: there is no Ingress for this server. Apps reach it from their
-# nginx at http://duckdb-mcp.schmidtdse.svc.cluster.local:8000/mcp.
+# Apps reach this server from their nginx at
+# http://duckdb-mcp.schmidtdse.svc.cluster.local:8000/mcp. Headless callers with
+# their own key use the Ingress at https://geo-query.nrp-nautilus.io/mcp
+# (schmidtdse-ingress.yaml).
 apiVersion: v1
 kind: Service
 metadata:

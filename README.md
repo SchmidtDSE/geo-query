@@ -405,10 +405,16 @@ Secret `duckdb-mcp-auth`, key `MCP_AUTH_TOKEN`, in its own namespace.
 ### The schmidtdse server
 
 The `schmidtdse` namespace runs its own copy of the server
-(`k8s/schmidtdse-*.yaml`) with its own tokens. It has no Ingress: only the apps
-listed in the `duckdb-mcp-containment` NetworkPolicy can reach it, at
+(`k8s/schmidtdse-*.yaml`) with its own tokens. The apps listed in the
+`duckdb-mcp-containment` NetworkPolicy reach it in-cluster, at
 `http://duckdb-mcp.schmidtdse.svc.cluster.local:8000`. Tiles are not public
 there, so browsers fetch them through each app, which adds its token.
+
+Headless callers outside the cluster, such as CI, use
+`https://geo-query.nrp-nautilus.io/mcp` with a key of their own in
+`duckdb-mcp-tokens` (`k8s/schmidtdse-ingress.yaml`). That route serves only
+`/mcp` and `/version`, with no CORS and a per-IP rate limit. It does not serve
+`/tiles/`, so `register_hex_tiles` URLs are not usable from it.
 
 Tokens live in the Secret `schmidtdse/duckdb-mcp-tokens`, one key per app,
 named for the app. The same Secret is mounted into the server as
