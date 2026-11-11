@@ -92,8 +92,9 @@ spec:
     - port: 80
       protocol: TCP
 ---
-# wyoming-mcp reads its STAC catalog from the wyoming app's nginx in-cluster.
-# Apply only together with mcp-egress above.
+# wyoming-mcp reads its STAC catalog from the wyoming app's nginx listener on
+# 8090, which serves only the catalog. Apply only together with mcp-egress
+# above, after the wyoming app serves 8090 and before wyoming-mcp switches to it.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -111,5 +112,5 @@ spec:
         matchLabels:
           app: wyoming
     ports:
-    - port: 80
+    - port: 8090
       protocol: TCP
