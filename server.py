@@ -663,7 +663,7 @@ import concurrent.futures
 import threading
 import time
 from tiles.endpoint import serve_metadata, serve_tile
-from tiles.db import build_tile_connection
+from tiles.db import build_tile_connection, build_tile_writer_connection, split_tile_writes
 from tiles.pyramid import (
     MVT_LAYER_NAME,
     _public_base_url,
@@ -738,7 +738,8 @@ def _start_lock_heartbeat(output_uri: str):
     Returns a stop() callable; call it when the build ends (the pod dying just
     stops the heartbeat, letting the lock age out within _LOCK_STALE_SECONDS)."""
     stop = threading.Event()
-    hb_con = build_tile_connection(threads=1)
+    # Writes the tile bucket, so it is a writer connection (no caller SQL).
+    hb_con = build_tile_writer_connection(threads=1)
     existing = read_lock(hb_con, output_uri)
     started_at = (existing or {}).get("started_at")
 
@@ -767,13 +768,21 @@ def _submit_build(plan: dict) -> concurrent.futures.Future:
             return existing["future"]
 
         def _do_build():
+            # build_con runs the caller's SQL. With a tile write key configured
+            # (split_tile_writes) it holds read credentials only, and writer_con,
+            # which never runs caller SQL, writes the pyramid and its markers.
             build_con = build_tile_connection(threads=_BUILD_THREADS)
-            print(f"[tile-build] hash={h} START pod={_POD_ID} threads={_BUILD_THREADS}",
+            writer_con = (
+                build_tile_writer_connection(threads=_BUILD_THREADS)
+                if split_tile_writes() else None
+            )
+            print(f"[tile-build] hash={h} START pod={_POD_ID} threads={_BUILD_THREADS}"
+                  f" split_writes={writer_con is not None}",
                   file=sys.stderr)
             t0 = time.perf_counter()
             stop_heartbeat = _start_lock_heartbeat(plan["output_uri"])
             try:
-                return build_hex_tiles(build_con, plan)
+                return build_hex_tiles(build_con, plan, writer_con=writer_con)
             except Exception as exc:
                 print(
                     f"[tile-build] hash={h} FAILED after "
@@ -783,7 +792,7 @@ def _submit_build(plan: dict) -> concurrent.futures.Future:
                 # Persist failure so other pods (and this pod after _jobs
                 # eviction) can return status=failed instead of "unknown".
                 try:
-                    write_failed(build_con, plan["output_uri"], error=str(exc))
+                    write_failed(writer_con or build_con, plan["output_uri"], error=str(exc))
                 except Exception:
                     # Marker write failed (S3 blip); preserve original raise.
                     pass
@@ -791,6 +800,8 @@ def _submit_build(plan: dict) -> concurrent.futures.Future:
             finally:
                 stop_heartbeat()
                 build_con.close()
+                if writer_con is not None:
+                    writer_con.close()
 
         future = _build_executor.submit(_do_build)
         _jobs[h] = {"future": future, "started_at": time.time()}
@@ -970,7 +981,16 @@ def register_hex_tiles(
         }
 
     try:
-        write_lock(read_con, plan["output_uri"], pod_id=_POD_ID)
+        if split_tile_writes():
+            # read_con runs caller SQL and holds no write key; a short-lived
+            # writer connection takes the lock.
+            lock_con = build_tile_writer_connection(threads=1)
+            try:
+                write_lock(lock_con, plan["output_uri"], pod_id=_POD_ID)
+            finally:
+                lock_con.close()
+        else:
+            write_lock(read_con, plan["output_uri"], pod_id=_POD_ID)
     except Exception:
         # S3 blip writing lock; proceed anyway. Worst case is a duplicate
         # build elsewhere — see spec "Race we knowingly accept".

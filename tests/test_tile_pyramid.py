@@ -1120,3 +1120,110 @@ class TestSuggestScale:
         assert _suggest_scale(self._by_res(0, 0, 0), 6) == "linear"
         assert _suggest_scale({"6": {"min": 1, "max": 9, "mean": None}}, 6) == "linear"
         assert _suggest_scale({}, 6) == "linear"
+
+
+class TestTileWriteSplit:
+    """With a tile write key (TILE_WRITE_KEY_ID), caller SQL never runs on a
+    connection that holds it: the source connection streams phase 1 to a
+    writer connection that does every write. Unset, nothing changes."""
+
+    @pytest.fixture
+    def write_key(self, monkeypatch):
+        monkeypatch.setenv("TILE_WRITE_KEY_ID", "test-key")
+        monkeypatch.setenv("TILE_WRITE_SECRET", "test-secret")
+        monkeypatch.setenv("TILE_WRITE_ENDPOINT", "minio.example.org")
+
+    @staticmethod
+    def _secrets(con):
+        return {r[0]: r[1] for r in con.sql("SELECT name, scope FROM duckdb_secrets()").fetchall()}
+
+    def test_off_by_default(self, monkeypatch):
+        from tiles.db import build_tile_writer_connection, split_tile_writes
+        monkeypatch.delenv("TILE_WRITE_KEY_ID", raising=False)
+        assert not split_tile_writes()
+        con = build_tile_writer_connection(threads=1)
+        try:
+            names = self._secrets(con)
+            # Without a write key the "writer" is the ordinary tile connection.
+            assert "s3" in names and "tile_write" not in names
+        finally:
+            con.close()
+
+    def test_caller_connection_never_holds_write_key(self, write_key, monkeypatch):
+        monkeypatch.setenv("TILE_BUCKET_BASE", "s3://private-assets")
+        con = build_tile_connection(threads=1)
+        try:
+            assert "tile_write" not in self._secrets(con)
+        finally:
+            con.close()
+
+    def test_writer_holds_only_the_scoped_write_key(self, write_key, monkeypatch):
+        from tiles.db import build_tile_writer_connection
+        monkeypatch.setenv("TILE_BUCKET_BASE", "s3://private-assets")
+        con = build_tile_writer_connection(threads=1)
+        try:
+            secrets = self._secrets(con)
+            assert list(secrets) == ["tile_write"]
+            assert secrets["tile_write"] == ["s3://private-assets"]
+            # Locked down like every other connection.
+            with pytest.raises(duckdb.Error):
+                con.sql("SET threads=2")
+        finally:
+            con.close()
+
+    def _build(self, monkeypatch, tmp_path, name, split, sql, agg):
+        from tiles.db import build_tile_writer_connection
+        from tiles.pyramid import build_hex_tiles
+        bucket = tmp_path / name
+        bucket.mkdir()
+        monkeypatch.setenv("TILE_BUCKET_BASE", str(bucket))
+        if split:
+            monkeypatch.setenv("TILE_WRITE_KEY_ID", "test-key")
+            monkeypatch.setenv("TILE_WRITE_SECRET", "test-secret")
+        else:
+            monkeypatch.delenv("TILE_WRITE_KEY_ID", raising=False)
+        con = build_tile_connection(threads=2)
+        writer = build_tile_writer_connection(threads=2) if split else None
+        try:
+            plan = prepare_hex_tiles(con=con, sql=sql, min_res=2, agg=agg)
+            result = build_hex_tiles(con, plan, writer_con=writer)
+            levels = {
+                res: sorted(con.sql(
+                    f"SELECT * EXCLUDE (res) FROM read_parquet('{plan['output_uri']}res={res}/**/*.parquet') "
+                    f"ORDER BY ALL").fetchall())
+                for res in range(2, plan["finest_res"] + 1)
+            }
+            return result, levels
+        finally:
+            con.close()
+            if writer is not None:
+                writer.close()
+
+    @pytest.mark.parametrize("agg", ["AVG", "SUM", "COUNT", "COUNT_DISTINCT"])
+    def test_split_build_matches_single_connection(self, monkeypatch, tmp_path, agg):
+        monkeypatch.setenv("MCP_PUBLIC_BASE_URL", "http://test.local")
+        sql = (
+            "SELECT h3_latlng_to_cell(30 + (i % 97) / 10.0, -120 + (i % 89) / 10.0, 6) AS h6, "
+            "(i % 13)::DOUBLE AS val FROM range(20000) t(i)"
+        )
+        plain, plain_levels = self._build(monkeypatch, tmp_path, "plain", False, sql, agg)
+        split, split_levels = self._build(monkeypatch, tmp_path, "split", True, sql, agg)
+        assert split_levels == plain_levels
+        for key in ("bounds", "feature_count_finest", "value_columns"):
+            assert split[key] == plain[key], key
+        # Means can differ in the last bits: parallel summation order varies.
+        for col, stats in plain["value_stats"].items():
+            got = split["value_stats"][col]
+            assert got["suggested_scale"] == stats["suggested_scale"]
+            for res, s in stats["by_res"].items():
+                assert got["by_res"][res] == pytest.approx(s, rel=1e-9), (col, res)
+
+    def test_quoted_column_name_cannot_break_out(self, local_bucket, h3_conn):
+        """Caller column names reach statements the writer runs, so an embedded
+        double quote must stay inside the identifier."""
+        user_sql = 'SELECT h3_latlng_to_cell(37.8, -122.3, 5) AS h5, 2.0 AS "a""b"'
+        result = register_hex_tiles(
+            con=h3_conn, sql=user_sql, finest_res=5, min_res=4, agg="SUM", zoom_offset=2,
+        )
+        assert result["value_columns"] == ['a"b']
+        assert result["value_stats"]['a"b']["by_res"]["5"]["max"] == 2.0
