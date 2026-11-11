@@ -1,0 +1,12 @@
+{
+  "type": "Catalog",
+  "stac_version": "1.1.0",
+  "id": "government",
+  "description": "A theme catalog.",
+  "links": [
+    { "rel": "root", "href": "../catalog.json", "type": "application/json" },
+    { "rel": "parent", "href": "../catalog.json", "type": "application/json" },
+    { "rel": "child", "href": "./wards/collection.json", "type": "application/json" },
+    { "rel": "child", "href": "./wards-2010/collection.json", "type": "application/json" }
+  ]
+}

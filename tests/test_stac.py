@@ -11,6 +11,28 @@ import stac
 from stac import list_datasets, get_dataset, fetch_stac_catalog, get_collection, _collection_to_dict, _fuzzy_lookup, _format_collection, _href_to_s3
 
 
+def _mockable_read(href, stac_io):
+    """Route the catalog walk's one read point to the pystac entry points the
+    mock-based tests in this file patch: a catalog.json (the root) through
+    Catalog.from_file, every other node through Collection.from_file. The real
+    read (type dispatch, relative hrefs) is tested on fixture files in
+    test_stac_walk.py."""
+    if href.endswith("catalog.json"):
+        obj = stac.pystac.Catalog.from_file(href, stac_io=stac_io)
+    else:
+        obj = stac.pystac.Collection.from_file(href, stac_io=stac_io)
+    # The walk reads a link's raw href with get_target_str(); mock links set .href.
+    for link in getattr(obj, "links", None) or []:
+        if isinstance(link, MagicMock):
+            link.get_target_str.return_value = link.href
+    return obj
+
+
+@pytest.fixture(autouse=True)
+def _route_reads_to_mocks(monkeypatch):
+    monkeypatch.setattr(stac, "_read_stac_object", _mockable_read)
+
+
 class TestCatalogUrlParameter:
     """Test that list_datasets and get_dataset accept an optional catalog_url."""
 
@@ -596,25 +618,41 @@ class TestGetCollection:
         col.get_children.return_value = []
         return col
 
+    @staticmethod
+    def _link(href):
+        link = MagicMock()
+        link.rel = "child"
+        link.href = href
+        link.title = None
+        return link
+
+    def _patched(self, root, by_href):
+        """Patch the root read and route child reads by href."""
+        def child(href, *args, **kwargs):
+            return by_href[href]
+        return (patch('stac.pystac.Catalog.from_file', return_value=root),
+                patch('stac.pystac.Collection.from_file', side_effect=child))
+
     def _make_mock_catalog(self):
         col = self._make_minimal_col("custom-col", title="Custom Collection",
                                      description="For testing", license="ODbL")
         mock_catalog = MagicMock()
-        mock_catalog.get_child.return_value = col
-        mock_catalog.get_children.return_value = [col]
-        return mock_catalog
+        mock_catalog.links = [self._link("https://example.com/custom-col/collection.json")]
+        return mock_catalog, {"https://example.com/custom-col/collection.json": col}
 
     def test_returns_dict_with_id(self):
-        with patch('stac.pystac.Catalog.from_file', return_value=self._make_mock_catalog()):
+        root, by_href = self._make_mock_catalog()
+        p1, p2 = self._patched(root, by_href)
+        with p1, p2:
             result = get_collection("custom-col",
                                     catalog_url="https://example.com/catalog.json")
         assert isinstance(result, dict)
         assert result["id"] == "custom-col"
 
     def test_not_found_returns_error_dict(self):
-        mock_catalog = self._make_mock_catalog()
-        mock_catalog.get_child.return_value = None  # direct lookup fails
-        with patch('stac.pystac.Catalog.from_file', return_value=mock_catalog):
+        root, by_href = self._make_mock_catalog()
+        p1, p2 = self._patched(root, by_href)
+        with p1, p2:
             result = get_collection("nonexistent",
                                     catalog_url="https://example.com/catalog.json")
         assert "error" in result
@@ -626,48 +664,48 @@ class TestGetCollection:
         assert "error" in result
         assert "timeout" in result["error"]
 
-    def test_children_exposed_for_parent(self):
+    def _parent_and_child(self):
         child = self._make_minimal_col("child-col", title="Child")
         parent = self._make_minimal_col("parent-col", title="Parent")
-        parent.get_children.return_value = [child]
+        parent.links = [self._link("https://example.com/parent/child/collection.json")]
+        root = MagicMock()
+        root.links = [self._link("https://example.com/parent/collection.json")]
+        return root, {
+            "https://example.com/parent/collection.json": parent,
+            "https://example.com/parent/child/collection.json": child,
+        }
 
-        mock_catalog = MagicMock()
-        mock_catalog.get_child.return_value = parent
-        mock_catalog.get_children.return_value = [parent]
-
-        with patch('stac.pystac.Catalog.from_file', return_value=mock_catalog):
+    def test_children_exposed_for_parent(self):
+        root, by_href = self._parent_and_child()
+        p1, p2 = self._patched(root, by_href)
+        with p1, p2:
             result = get_collection("parent-col",
                                     catalog_url="https://example.com/catalog.json")
         assert isinstance(result["children"], list)
         assert result["children"][0]["id"] == "child-col"
 
     def test_finds_sub_child_by_exact_id(self):
-        """get_collection finds a sub-child without iterating the whole catalog."""
-        child = self._make_minimal_col("sub-dataset", title="Sub Dataset")
-        parent = self._make_minimal_col("parent-col", title="Parent")
-        parent.get_children.return_value = [child]
-
-        mock_catalog = MagicMock()
-        mock_catalog.get_child.return_value = None  # not top-level
-        mock_catalog.get_children.return_value = [parent]
-
-        with patch('stac.pystac.Catalog.from_file', return_value=mock_catalog):
-            result = get_collection("sub-dataset",
+        root, by_href = self._parent_and_child()
+        p1, p2 = self._patched(root, by_href)
+        with p1, p2:
+            result = get_collection("child-col",
                                     catalog_url="https://example.com/catalog.json")
-        assert result["id"] == "sub-dataset"
+        assert result["id"] == "child-col"
 
     def test_fuzzy_prefix_match(self):
         """Prefix match: 'custom' finds 'custom-col'."""
-        with patch('stac.pystac.Catalog.from_file', return_value=self._make_mock_catalog()) as m:
-            m.return_value.get_child.return_value = None  # no exact match for 'custom'
+        root, by_href = self._make_mock_catalog()
+        p1, p2 = self._patched(root, by_href)
+        with p1, p2:
             result = get_collection("custom",
                                     catalog_url="https://example.com/catalog.json")
         assert result["id"] == "custom-col"
 
     def test_fuzzy_substring_match(self):
         """Substring match: 'stom' finds 'custom-col'."""
-        with patch('stac.pystac.Catalog.from_file', return_value=self._make_mock_catalog()) as m:
-            m.return_value.get_child.return_value = None
+        root, by_href = self._make_mock_catalog()
+        p1, p2 = self._patched(root, by_href)
+        with p1, p2:
             result = get_collection("stom",
                                     catalog_url="https://example.com/catalog.json")
         assert result["id"] == "custom-col"
@@ -888,31 +926,31 @@ class TestFetchResilience:
         assert "public-wyoming" in result
         assert "Wyoming Wildlife" in result
 
-    def test_fetch_parent_success_returns_collection_and_subchild_hrefs(self):
-        """On success: returns the Collection, a list of sub-child hrefs, and None for error."""
+    def test_fetch_node_success_returns_object_and_child_links(self):
+        """On success: returns the object, its (href, title) child links, and None for error."""
         from unittest.mock import patch, MagicMock
         import stac
 
         mock_col = MagicMock()
         mock_col.id = "test-parent"
-        link1 = MagicMock(); link1.rel = "child"; link1.href = "https://example.com/child1.json"
-        link2 = MagicMock(); link2.rel = "child"; link2.href = "https://example.com/child2.json"
+        link1 = MagicMock(); link1.rel = "child"; link1.href = "https://example.com/child1.json"; link1.title = "One"
+        link2 = MagicMock(); link2.rel = "child"; link2.href = "https://example.com/child2.json"; link2.title = None
         link3 = MagicMock(); link3.rel = "self";  link3.href = "https://example.com/self.json"
         mock_col.links = [link1, link2, link3]
 
         with patch("stac.pystac.Collection.from_file", return_value=mock_col):
-            col, subchild_hrefs, error = stac._fetch_parent(
+            obj, kids, error = stac._fetch_node(
                 "https://example.com/parent.json", title="Parent", token=None,
             )
 
-        assert col is mock_col
-        assert subchild_hrefs == [
-            "https://example.com/child1.json",
-            "https://example.com/child2.json",
+        assert obj is mock_col
+        assert kids == [
+            ("https://example.com/child1.json", "One"),
+            ("https://example.com/child2.json", None),
         ]
         assert error is None
 
-    def test_fetch_parent_timeout_returns_error_with_href_tail(self):
+    def test_fetch_node_timeout_returns_error_with_href_tail(self):
         """On timeout: returns (None, [], {ident: reason}) where ident is href-derived."""
         from unittest.mock import patch
         import requests
@@ -922,21 +960,18 @@ class TestFetchResilience:
             "stac.pystac.Collection.from_file",
             side_effect=requests.exceptions.Timeout("connection timed out"),
         ):
-            col, subchild_hrefs, error = stac._fetch_parent(
+            obj, kids, error = stac._fetch_node(
                 "https://example.com/public-wyoming/stac-collection.json",
                 title=None, token=None,
             )
 
-        assert col is None
-        assert subchild_hrefs == []
-        assert error is not None
-        # Identifier should include the href tail segment
+        assert obj is None
+        assert kids == []
         assert "public-wyoming" in next(iter(error.keys()))
-        # Reason should include the exception class name
         assert "Timeout" in next(iter(error.values()))
 
-    def test_fetch_parent_catches_all_exceptions(self):
-        """Any exception is caught; worker never raises."""
+    def test_fetch_node_catches_all_exceptions(self):
+        """Any exception is caught; the worker never raises."""
         from unittest.mock import patch
         import stac
 
@@ -944,53 +979,18 @@ class TestFetchResilience:
             "stac.pystac.Collection.from_file",
             side_effect=ValueError("malformed JSON"),
         ):
-            col, subchild_hrefs, error = stac._fetch_parent(
+            obj, kids, error = stac._fetch_node(
                 "https://example.com/foo.json", title=None, token=None,
             )
 
-        assert col is None
-        assert error is not None
+        assert obj is None
         assert "ValueError" in next(iter(error.values()))
-
-    def test_fetch_subchild_success(self):
-        """Sub-child worker returns (col, None) on success."""
-        from unittest.mock import patch, MagicMock
-        import stac
-
-        mock_col = MagicMock()
-        mock_col.id = "test-subchild"
-
-        with patch("stac.pystac.Collection.from_file", return_value=mock_col):
-            col, error = stac._fetch_subchild(
-                "https://example.com/sub.json", parent_id="parent", token=None,
-            )
-
-        assert col is mock_col
-        assert error is None
-
-    def test_fetch_subchild_failure(self):
-        """Sub-child worker returns (None, error) on failure."""
-        from unittest.mock import patch
-        import requests
-        import stac
-
-        with patch(
-            "stac.pystac.Collection.from_file",
-            side_effect=requests.exceptions.ConnectionError("conn refused"),
-        ):
-            col, error = stac._fetch_subchild(
-                "https://example.com/public-foo/sub/stac-collection.json",
-                parent_id="public-foo", token=None,
-            )
-
-        assert col is None
-        assert error is not None
-        assert "ConnectionError" in next(iter(error.values()))
 
     def _reset_module_state(self, stac_mod):
         """Reset module-level caches between tests to avoid cross-test pollution."""
         stac_mod.STAC_DATASETS.clear()
         stac_mod._STAC_RAW.clear()
+        stac_mod._STAC_INDEX.clear()
         stac_mod.STAC_LOAD_ERRORS.clear()
 
     def _make_root_catalog(self, child_hrefs):
@@ -1152,6 +1152,7 @@ class TestFetchResilience:
         monkeypatch.setenv("STAC_FETCH_CONCURRENCY", "2")
         importlib.reload(stac)
         self._reset_module_state(stac)
+        monkeypatch.setattr(stac, "_read_stac_object", _mockable_read)
 
         cat = self._make_root_catalog([])  # no children — just verify executor arg
 
@@ -1302,6 +1303,7 @@ class TestFetchResilience:
         monkeypatch.setenv("STAC_CHILD_RETRY_TIMEOUT", "8")
         importlib.reload(stac)
         self._reset_module_state(stac)
+        monkeypatch.setattr(stac, "_read_stac_object", _mockable_read)
 
         cat = self._make_root_catalog([
             "https://example.com/public-flaky/stac-collection.json",
@@ -1776,6 +1778,7 @@ class TestPublicCatalogUrl:
     def _reset(self, stac_mod):
         stac_mod.STAC_DATASETS.clear()
         stac_mod._STAC_RAW.clear()
+        stac_mod._STAC_INDEX.clear()
         stac_mod.STAC_LOAD_ERRORS.clear()
 
     def test_defaults_to_internal_url_when_unset(self, monkeypatch):
@@ -1862,7 +1865,8 @@ class TestPublicCatalogUrl:
 
         self._reset(stac)
         monkeypatch.setenv("STAC_PUBLIC_CATALOG_URL", "https://minio.example/catalog.json")
-        with patch("stac.fetch_stac_catalog", return_value={"ds-1": "**DS 1**\nDesc"}):
+        walked = ({"ds-1": "**DS 1**\nDesc"}, {}, [(0, "ds-1", False)], {})
+        with patch("stac._walk_catalog", return_value=walked):
             out = stac.list_datasets(catalog_url="https://elsewhere.example/catalog.json")
 
         assert "STAC catalog: `https://elsewhere.example/catalog.json`" in out

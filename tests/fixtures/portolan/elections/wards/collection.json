@@ -1,0 +1,47 @@
+{
+  "type": "Collection",
+  "stac_version": "1.1.0",
+  "id": "elections/wards",
+  "title": "Election Wards",
+  "description": "A second collection whose id ends in wards.",
+  "license": "other",
+  "extent": {
+    "spatial": {
+      "bbox": [
+        [
+          -90.32,
+          38.53,
+          -90.17,
+          38.77
+        ]
+      ]
+    },
+    "temporal": {
+      "interval": [
+        [
+          null,
+          null
+        ]
+      ]
+    }
+  },
+  "links": [
+    {
+      "rel": "root",
+      "href": "../../catalog.json",
+      "type": "application/json"
+    },
+    {
+      "rel": "parent",
+      "href": "../catalog.json",
+      "type": "application/json"
+    }
+  ],
+  "assets": {
+    "wards": {
+      "href": "./wards.parquet",
+      "type": "application/vnd.apache.parquet",
+      "title": "Election wards"
+    }
+  }
+}
