@@ -14,7 +14,7 @@ metadata:
   annotations:
     haproxy-ingress.github.io/balance-algorithm: leastconn
     # Per client IP.
-    haproxy-ingress.github.io/limit-rps: "2"
+    haproxy-ingress.github.io/limit-rps: "10"
     haproxy-ingress.github.io/limit-connections: "10"
     haproxy-ingress.github.io/timeout-client: "600s"
     haproxy-ingress.github.io/timeout-server: "600s"
