@@ -132,7 +132,10 @@ changes. Two caveats:
   entry: `{"name":"minio_output","secret":{"endpoint":"minio.carlboettiger.info","scope":"s3://public-output"}}`.
 - **Booting mid-outage.** With `STAC_CATALOG_URL` on the mirror the head starts
   normally. Keeping the Ceph catalog URL requires `STAC_ALLOW_DEGRADED_START=true`
-  (#262) or fail-fast startup crashloops until the primary returns.
+  (#262) or fail-fast startup crashloops until the primary returns. A pod that
+  boots that way fails `/readyz` until its catalog loads (#429), so it serves
+  nothing while the primary is down; also set `STAC_READY_WITHOUT_CATALOG=true`
+  to keep it in service with an empty catalog.
 
 ## Zero-touch alternative
 

@@ -10,6 +10,7 @@ high-speed internal reads via the Ceph S3 endpoint.
 import os
 import sys
 import threading
+import time
 import pystac
 import requests
 from concurrent.futures import ThreadPoolExecutor, wait, FIRST_COMPLETED
@@ -87,6 +88,13 @@ def public_catalog_url() -> str:
 # new vars override it when set. Root is a hard prerequisite (generous timeout);
 # children are individually skippable (tight timeout). See
 # docs/superpowers/specs/2026-04-16-stac-catalog-resilience-design.md.
+# Lookups that miss the cached catalog re-walk it, in case a dataset was added
+# since the last load (#11). At most one such re-walk per this many seconds, so a
+# pod whose catalog host is unreachable doesn't stall every miss for the root
+# timeout, and a stream of unknown ids can't make the server re-walk the whole
+# catalog on every call (#429). The periodic refresh is not affected.
+_STAC_MISS_REFETCH_COOLDOWN = float(os.environ.get("STAC_MISS_REFETCH_COOLDOWN", "60"))
+
 _STAC_ROOT_TIMEOUT = int(
     os.environ.get("STAC_ROOT_TIMEOUT", os.environ.get("STAC_TIMEOUT", "15"))
 )
@@ -803,6 +811,31 @@ def fetch_stac_catalog(catalog_url: str = None, catalog_token: str = None) -> di
 # clear()/update() pattern works on first call.
 STAC_DATASETS: dict[str, str] = {}
 
+# time.monotonic() of the last on-miss re-walk of the default catalog (None: never).
+_last_miss_refetch: float | None = None
+
+
+def _refetch_on_miss() -> bool:
+    """Re-walk the default catalog after a lookup miss, unless one ran within
+    _STAC_MISS_REFETCH_COOLDOWN seconds. Returns True if it re-walked."""
+    global _last_miss_refetch
+    now = time.monotonic()
+    with _STAC_LOCK:
+        if (_last_miss_refetch is not None
+                and now - _last_miss_refetch < _STAC_MISS_REFETCH_COOLDOWN):
+            return False
+        _last_miss_refetch = now
+    fetch_stac_catalog()
+    return True
+
+
+def catalog_loaded() -> bool:
+    """Whether the default catalog has any datasets to serve. False on a pod that
+    booted DEGRADED and hasn't loaded since; a later failed refresh keeps the
+    previous snapshot, so it stays True (#429)."""
+    with _STAC_LOCK:
+        return bool(STAC_DATASETS)
+
 # Kick off the initial load at import. Populates STAC_DATASETS, _STAC_RAW,
 # STAC_LOAD_ERRORS in place.
 fetch_stac_catalog()
@@ -1074,8 +1107,7 @@ def get_dataset(
         return _ambiguous("Dataset", dataset_id, candidates, catalog_url)
 
     # Cache miss (default catalog only): re-fetch in case datasets were added since startup
-    if not catalog_url:
-        fetch_stac_catalog()  # populates STAC_DATASETS in place if successful
+    if not catalog_url and _refetch_on_miss():
         with _STAC_LOCK:
             result, candidates = _lookup(STAC_DATASETS, dataset_id)
         if result is not None:
@@ -1170,15 +1202,14 @@ def get_collection(
     if candidates:
         return {"error": _ambiguous("Collection", collection_id, candidates)}
 
-    # Cache miss: re-fetch.
-    # fetch_stac_catalog() updates _STAC_RAW when catalog_url is None.
-    fetch_stac_catalog()
-    with _STAC_LOCK:
-        result, candidates = _lookup(_STAC_RAW, collection_id)
-    if result is not None:
-        return result
-    if candidates:
-        return {"error": _ambiguous("Collection", collection_id, candidates)}
+    # Cache miss: re-fetch, which updates _STAC_RAW for the default catalog.
+    if _refetch_on_miss():
+        with _STAC_LOCK:
+            result, candidates = _lookup(_STAC_RAW, collection_id)
+        if result is not None:
+            return result
+        if candidates:
+            return {"error": _ambiguous("Collection", collection_id, candidates)}
 
     return {"error": (
         f"Collection '{collection_id}' not found in {_searched_catalog()}."
