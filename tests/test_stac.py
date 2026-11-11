@@ -18,8 +18,14 @@ def _mockable_read(href, stac_io):
     read (type dispatch, relative hrefs) is tested on fixture files in
     test_stac_walk.py."""
     if href.endswith("catalog.json"):
-        return stac.pystac.Catalog.from_file(href, stac_io=stac_io)
-    return stac.pystac.Collection.from_file(href, stac_io=stac_io)
+        obj = stac.pystac.Catalog.from_file(href, stac_io=stac_io)
+    else:
+        obj = stac.pystac.Collection.from_file(href, stac_io=stac_io)
+    # The walk reads a link's raw href with get_target_str(); mock links set .href.
+    for link in getattr(obj, "links", None) or []:
+        if isinstance(link, MagicMock):
+            link.get_target_str.return_value = link.href
+    return obj
 
 
 @pytest.fixture(autouse=True)

@@ -13,6 +13,7 @@ import threading
 import pystac
 import requests
 from concurrent.futures import ThreadPoolExecutor, wait, FIRST_COMPLETED
+from urllib.parse import urljoin
 from pystac.stac_io import DefaultStacIO
 
 import s3config
@@ -460,7 +461,7 @@ def _collection_to_dict(col, sub_children=None) -> dict:
     result["links"] = [
         {k: v for k, v in {
             "rel": lnk.rel,
-            "href": lnk.get_target_str(),
+            "href": _resolve_href(col, lnk.get_target_str()),
             "title": getattr(lnk, "title", None),
         }.items() if v is not None}
         for lnk in (col.links or [])
@@ -525,6 +526,20 @@ def _is_absolute_href(href: str) -> bool:
     return "://" in href or href.startswith("/")
 
 
+def _resolve_href(obj, href: str) -> str:
+    """*href* made absolute against *obj*'s own URL, with no network access.
+
+    pystac's Link.href and get_absolute_href can fetch the root catalog to decide
+    how to render a path, and a mirror's documents keep `root` pointing at the
+    original catalog (data.source.coop/cboettig/glen points at NRP), so every read
+    would also depend on that host. A plain urljoin against the self href avoids it.
+    """
+    if not href or _is_absolute_href(href):
+        return href
+    base = obj.get_self_href()
+    return urljoin(base, href) if base else href
+
+
 def _read_stac_object(href: str, stac_io):
     """Fetch one STAC document and parse it as a Catalog or a Collection (#433).
 
@@ -545,11 +560,7 @@ def _read_stac_object(href: str, stac_io):
         raise pystac.STACTypeError(f"{href} is a {kind!r}, not a Catalog or Collection")
     obj.set_self_href(href)
     for asset in (getattr(obj, "assets", None) or {}).values():
-        if asset.href and not _is_absolute_href(asset.href):
-            absolute = asset.get_absolute_href() or asset.href
-            if asset.href.endswith("/") and not absolute.endswith("/"):
-                absolute += "/"
-            asset.href = absolute
+        asset.href = _resolve_href(obj, asset.href)
     return obj
 
 
@@ -559,8 +570,7 @@ def _child_links(obj) -> list[tuple[str, str | None]]:
     for link in obj.links or []:
         if link.rel != "child":
             continue
-        href = link.href if _is_absolute_href(link.href) else (link.get_absolute_href() or link.href)
-        out.append((href, getattr(link, "title", None)))
+        out.append((_resolve_href(obj, link.get_target_str()), getattr(link, "title", None)))
     return out
 
 

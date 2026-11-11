@@ -192,3 +192,27 @@ def test_inline_catalog_nests_to_any_depth():
     out = stac.list_datasets(catalog=catalog)
     assert "# Available Datasets (1 dataset in 2 groups)" in out
     assert "    - **leaf**" in out
+
+
+# --- No network beyond the documents themselves ---------------------------------
+
+def test_root_link_to_another_host_is_never_fetched(tmp_path):
+    """A mirror's documents keep `root` pointing at the original catalog; reading
+    them must not depend on that host (the GLEN source.coop mirror points at NRP)."""
+    away = [{"rel": "root", "href": "https://unreachable.invalid/catalog.json"}]
+    _write(tmp_path / "catalog.json", _catalog("root", ["./g/catalog.json"], away))
+    _write(tmp_path / "g" / "catalog.json", _catalog("g", ["./leaf/collection.json"], away))
+    leaf = _collection("leaf", assets={"d": {"href": "./d.parquet",
+                                             "type": "application/vnd.apache.parquet"}})
+    leaf["links"] += away
+    _write(tmp_path / "g" / "leaf" / "collection.json", leaf)
+    datasets, _raw, _index, errors = _walk((tmp_path / "catalog.json").as_uri())
+    assert errors == {}
+    assert set(datasets) == {"g", "leaf"}
+
+
+def test_collection_dict_links_are_absolute():
+    d = stac.get_collection("government/wards", catalog_url=PORTOLAN)
+    readme = next(link for link in d["links"] if link["rel"] == "describedby")
+    assert readme["href"] == (Path(__file__).parent / "fixtures" / "portolan" / "government"
+                              / "wards" / "README.md").as_uri()
