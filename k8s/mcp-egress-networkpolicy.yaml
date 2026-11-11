@@ -13,10 +13,8 @@
 # or it loses Ceph. Egress only: these policies set no ingress rules.
 #
 # Selected servers: duckdb-mcp and dev-duckdb-mcp, both in this repo. Other
-# apps' MCP servers keep their egress policy in their own repo (ca30x30-mcp in
-# boettiger-lab/ca-30x30, sdm-mcp in SchmidtDSE/hexsdm, wyoming-mcp in
-# boettiger-lab/wyoming). Do not add them back here: policies add up, so this
-# one would widen theirs.
+# deployments of this server keep their egress policy with their own manifests.
+# Do not select them here: policies add up, so this one would widen theirs.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
