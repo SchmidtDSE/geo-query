@@ -1,4 +1,4 @@
-from auth import CALLER, load_tokens, match_token
+from auth import CALLER, caller_label, load_tokens, match_token
 import os
 import re
 import socket
@@ -1270,7 +1270,7 @@ class _BearerAuthMiddleware(BaseHTTPMiddleware):
         caller = match_token(supplied, _auth_tokens())
         if caller is None:
             return JSONResponse({"error": "Unauthorized"}, status_code=401)
-        reset = CALLER.set(caller)
+        reset = CALLER.set(caller_label(caller, request.headers.get("X-Glen-App")))
         try:
             return await call_next(request)
         finally:
