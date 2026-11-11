@@ -8,12 +8,18 @@ older single MCP_AUTH_TOKEN still works, under the name "default".
 """
 import hmac
 import os
+import re
 import sys
 from contextvars import ContextVar
 
 # Name of the token that authorised the current request ("-" when auth is off
-# or the route is exempt). Set by the auth middleware; read for log lines.
+# or the route is exempt), with the app's X-Glen-App name when it sent one
+# ("public/padus"). Set by the auth middleware; read for log lines only.
 CALLER: ContextVar[str] = ContextVar("mcp_caller", default="-")
+
+# An app name as a Kubernetes label value allows: 1-63 characters, alphanumeric
+# at both ends, with "-", "_" and "." inside.
+_APP_NAME = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9._-]{0,61}[A-Za-z0-9])?")
 
 
 def load_tokens(tokens_dir: str = "", single: str = "") -> dict[str, str]:
@@ -64,3 +70,20 @@ def match_token(supplied: str, tokens: dict[str, str]) -> str | None:
         if hmac.compare_digest(supplied.encode(), token.encode()):
             found = name
     return found
+
+
+def caller_label(token_name: str, app: str | None) -> str:
+    """The name to log for a request: the token's name, plus "/<app>" when the
+    request carries an X-Glen-App header (#488).
+
+    Public apps share one key, so the header is what tells them apart in the logs.
+    It identifies an app; it does not authenticate one, and nothing but logging
+    should read it. The client sets it, so a value that isn't a plain app name
+    is logged as "?" rather than echoed into the log.
+    """
+    if app is None:
+        return token_name
+    app = app.strip()
+    if not app:
+        return token_name
+    return f"{token_name}/{app if _APP_NAME.fullmatch(app) else '?'}"

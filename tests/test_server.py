@@ -1112,6 +1112,12 @@ class TestHealthz:
         client = TestClient(app)
         assert client.get("/whoami", headers={"Authorization": "Bearer tok-b"}).text == "biodiversity"
         assert client.get("/whoami", headers={"Authorization": "Bearer tok-s"}).text == "schmidtdse"
+        # X-Glen-App names the app in the log; it doesn't open anything by itself (#488).
+        assert client.get("/whoami", headers={"Authorization": "Bearer tok-s",
+                                              "X-Glen-App": "padus"}).text == "schmidtdse/padus"
+        assert client.get("/whoami", headers={"Authorization": "Bearer tok-s",
+                                              "X-Glen-App": "padus\nfake"}).text == "schmidtdse/?"
+        assert client.get("/whoami", headers={"X-Glen-App": "padus"}).status_code == 401
         assert client.get("/whoami", headers={"Authorization": "Bearer tok-x"}).status_code == 401
         assert client.get("/whoami").status_code == 401
         monkeypatch.setattr(server, "_MCP_AUTH_TOKENS", {"biodiversity": "tok-b"})

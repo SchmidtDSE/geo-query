@@ -1,7 +1,9 @@
 """Named MCP bearer tokens (#454)."""
 import os
 
-from auth import load_tokens, match_token
+import pytest
+
+from auth import caller_label, load_tokens, match_token
 
 
 def _secret_dir(tmp_path, entries):
@@ -46,3 +48,29 @@ def test_load_tokens_skips_unreadable_file(tmp_path):
     if os.access(os.path.join(d, "locked"), os.R_OK):  # running as root
         return
     assert load_tokens(d) == {"ok": "tok-ok"}
+
+
+def test_caller_label_adds_the_app_name():
+    assert caller_label("public", "padus") == "public/padus"
+    assert caller_label("public", "bosl-high-seas") == "public/bosl-high-seas"
+    assert caller_label("public", "  tpl-ca ") == "public/tpl-ca"
+
+
+def test_caller_label_without_the_header_is_the_token_name():
+    assert caller_label("coasts", None) == "coasts"
+    assert caller_label("coasts", "") == "coasts"
+    assert caller_label("coasts", "   ") == "coasts"
+
+
+@pytest.mark.parametrize("hostile", [
+    "padus\n🔍 Executing [admin]: DROP",
+    "padus\r\nX: y",
+    "a" * 64,
+    "-padus",
+    "padus/../x",
+    "pad us",
+    "padus]",
+    "\x1b[31mred",
+])
+def test_caller_label_never_echoes_a_hostile_value(hostile):
+    assert caller_label("public", hostile) == "public/?"

@@ -375,7 +375,10 @@ apps. The server reads every file in `MCP_AUTH_TOKENS_DIR` as a token named afte
 the file. That is the layout of a Secret mounted as a volume, so on NRP the tokens
 live in the `duckdb-mcp-tokens` Secret in `biodiversity`, mounted at
 `/etc/mcp-tokens`. The query log shows the caller's name, never the token
-(`🔍 Executing [schmidtdse]: …`). If `MCP_AUTH_TOKENS_DIR` is set but yields no
+(`🔍 Executing [schmidtdse]: …`). Apps that share a key send an `X-Glen-App`
+header with their name, which the log adds (`[public/padus]`). The header only
+labels the log line; access depends on the key alone, and a value that isn't a
+plain app name is logged as `?`. If `MCP_AUTH_TOKENS_DIR` is set but yields no
 tokens, the server refuses to start rather than start without auth.
 
 Apps keep their token server-side: their nginx proxies a same-origin `/api/mcp`
