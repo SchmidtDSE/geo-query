@@ -5,7 +5,7 @@ import time
 
 import pytest
 
-from spillguard import SpillGuard
+from spillguard import MemorySample, SpillGuard, instance_memory, read_memory
 from tests.test_dbconfig import _SPILL_QUERY, _spill_conn
 
 
@@ -16,7 +16,7 @@ def _fill(path, nbytes):
 
 
 def test_off_without_a_limit(tmp_path):
-    guard = SpillGuard(limit=None, root=str(tmp_path))
+    guard = SpillGuard(limit=None, root=str(tmp_path), memory=False)
     assert not guard.enabled
     guard.check()
     assert not guard.under_pressure()
@@ -26,14 +26,14 @@ def test_off_without_a_limit(tmp_path):
 def test_usage_counts_only_duckdb_spill_dirs(tmp_path):
     _fill(tmp_path / "duckdb-a", 1 << 20)
     _fill(tmp_path / "other", 1 << 20)
-    guard = SpillGuard(limit=10 << 20, root=str(tmp_path))
+    guard = SpillGuard(memory=False, limit=10 << 20, root=str(tmp_path))
     usage = guard.usage()
     assert list(usage) == [os.path.normpath(tmp_path / "duckdb-a")]
     assert usage[os.path.normpath(tmp_path / "duckdb-a")] >= 1 << 20
 
 
 def test_pressure_turns_on_at_the_drain_mark_and_off_below_it(tmp_path):
-    guard = SpillGuard(limit=10 << 20, root=str(tmp_path),
+    guard = SpillGuard(memory=False, limit=10 << 20, root=str(tmp_path),
                        drain_fraction=0.5, interrupt_fraction=0.99)
     _fill(tmp_path / "duckdb-a", 6 << 20)
     guard.check()
@@ -62,9 +62,23 @@ class _FakeConn:
     def interrupt(self):
         self.interrupted = True
 
+    def cursor(self):
+        mem = getattr(self, "memory", 0)
+
+        class C:
+            def sql(self, _q):
+                class R:
+                    def fetchone(self):
+                        return (mem,)
+                return R()
+
+            def close(self):
+                pass
+        return C()
+
 
 def test_interrupts_the_largest_registered_spill_once(tmp_path):
-    guard = SpillGuard(limit=10 << 20, root=str(tmp_path),
+    guard = SpillGuard(memory=False, limit=10 << 20, root=str(tmp_path),
                        drain_fraction=0.5, interrupt_fraction=0.8)
     small, big = _FakeConn(str(tmp_path / "duckdb-small")), _FakeConn(str(tmp_path / "duckdb-big"))
     guard.register(small)
@@ -84,7 +98,7 @@ def test_interrupts_the_largest_registered_spill_once(tmp_path):
 
 
 def test_unregistered_spill_is_never_interrupted(tmp_path):
-    guard = SpillGuard(limit=10 << 20, root=str(tmp_path), interrupt_fraction=0.5)
+    guard = SpillGuard(memory=False, limit=10 << 20, root=str(tmp_path), interrupt_fraction=0.5)
     conn = _FakeConn(str(tmp_path / "duckdb-x"))
     guard.register(conn)
     guard.unregister(conn.temp_dir)
@@ -101,7 +115,7 @@ def test_real_concurrent_spills_stop_one_query_not_the_process(monkeypatch, tmp_
     monkeypatch.delenv("POD_EPHEMERAL_LIMIT", raising=False)
     monkeypatch.delenv("DUCKDB_MAX_TEMP_DIRECTORY_SIZE", raising=False)
     # Measure how much one copy spills, then set the limit so one fits and two don't.
-    probe = SpillGuard(limit=1 << 40, root=str(tmp_path))
+    probe = SpillGuard(memory=False, limit=1 << 40, root=str(tmp_path))
     peak = [0]
     done = threading.Event()
 
@@ -119,7 +133,7 @@ def test_real_concurrent_spills_stop_one_query_not_the_process(monkeypatch, tmp_
     w.join()
     assert peak[0] > 0, "the query did not spill"
 
-    guard = SpillGuard(limit=int(peak[0] * 1.6), root=str(tmp_path),
+    guard = SpillGuard(memory=False, limit=int(peak[0] * 1.6), root=str(tmp_path),
                        drain_fraction=0.3, interrupt_fraction=0.75)
     stop = threading.Event()
 
@@ -156,6 +170,171 @@ def test_default_marks_leave_room_before_eviction(monkeypatch, tmp_path):
     interrupt at 80% and check every second."""
     for var in ("SPILL_DRAIN_FRACTION", "SPILL_INTERRUPT_FRACTION", "SPILL_GUARD_INTERVAL"):
         monkeypatch.delenv(var, raising=False)
-    guard = SpillGuard(limit=50 << 30, root=str(tmp_path))
+    guard = SpillGuard(memory=False, limit=50 << 30, root=str(tmp_path))
     assert guard.drain_at == 25 << 30
     assert guard.interrupt_at == 40 << 30
+
+
+# --- memory -----------------------------------------------------------------
+
+_GiB = 1 << 30
+
+
+def test_read_memory_parses_cgroup_and_meminfo(monkeypatch, tmp_path):
+    (tmp_path / "memory.current").write_text(str(10 * _GiB))
+    (tmp_path / "memory.stat").write_text(f"anon 1\ninactive_file {2 * _GiB}\nactive_file 5\n")
+    (tmp_path / "memory.max").write_text(str(160 * _GiB))
+    (tmp_path / "meminfo").write_text("MemTotal: 999 kB\nMemAvailable:    1048576 kB\n")
+    s = read_memory(str(tmp_path), str(tmp_path / "meminfo"))
+    assert s == MemorySample(8 * _GiB, 160 * _GiB, _GiB)
+    # No cgroup limit: fall back to the Downward API value.
+    (tmp_path / "memory.max").write_text("max\n")
+    monkeypatch.setenv("POD_MEMORY_LIMIT", str(32 * _GiB))
+    assert read_memory(str(tmp_path), str(tmp_path / "meminfo")).pod_limit == 32 * _GiB
+    monkeypatch.delenv("POD_MEMORY_LIMIT")
+    assert read_memory(str(tmp_path / "missing"), str(tmp_path / "nope")) == MemorySample(None, None, None)
+
+
+def _mem_guard(sample, **kw):
+    box = [sample]
+    guard = SpillGuard(limit=None, root="/nonexistent", memory=True,
+                       memory_reader=lambda: box[0], **kw)
+    return guard, box
+
+
+def test_pod_memory_drains_and_clears():
+    guard, box = _mem_guard(MemorySample(60 * _GiB, 100 * _GiB, 400 * _GiB))
+    guard.check()
+    assert guard.under_pressure() and guard.pressure_reason() == "pod memory under pressure"
+    box[0] = MemorySample(45 * _GiB, 100 * _GiB, 400 * _GiB)  # under the mark, above 80% of it
+    guard.check()
+    assert guard.under_pressure()
+    box[0] = MemorySample(30 * _GiB, 100 * _GiB, 400 * _GiB)
+    guard.check()
+    assert not guard.under_pressure()
+
+
+def test_node_memory_counts_only_while_the_pod_holds_some():
+    # An idle pod on a busy node is not drained for other tenants' use.
+    guard, box = _mem_guard(MemorySample(1 * _GiB, 160 * _GiB, 4 * _GiB))
+    guard.check()
+    assert not guard.under_pressure()
+    # A pod holding 20 GiB on a node with 12 GiB left drains.
+    box[0] = MemorySample(20 * _GiB, 160 * _GiB, 12 * _GiB)
+    guard.check()
+    assert guard.pressure_reason() == "node memory under pressure"
+    box[0] = MemorySample(20 * _GiB, 160 * _GiB, 18 * _GiB)  # above the floor, not yet 25% above
+    guard.check()
+    assert guard.under_pressure()
+    box[0] = MemorySample(20 * _GiB, 160 * _GiB, 21 * _GiB)
+    guard.check()
+    assert not guard.under_pressure()
+
+
+def test_memory_interrupts_the_largest_instance_once(tmp_path):
+    guard, box = _mem_guard(MemorySample(95 * _GiB, 100 * _GiB, 400 * _GiB))
+    small, big = _FakeConn(str(tmp_path / "duckdb-s")), _FakeConn(str(tmp_path / "duckdb-b"))
+    small.memory, big.memory = 20 * _GiB, 70 * _GiB
+    guard.register(small)
+    guard.register(big)
+    guard.check()
+    assert big.interrupted and not small.interrupted
+    big.interrupted = False
+    guard.check()  # still 95 GiB on the cgroup, but 70 of it is being freed
+    assert not big.interrupted and not small.interrupted
+    assert guard.was_interrupted(big.temp_dir) == "memory"
+    assert guard.was_interrupted(small.temp_dir) is None
+
+
+def test_node_floor_interrupts_too(tmp_path):
+    guard, _ = _mem_guard(MemorySample(40 * _GiB, 160 * _GiB, 5 * _GiB))
+    conn = _FakeConn(str(tmp_path / "duckdb-x"))
+    conn.memory = 30 * _GiB
+    guard.register(conn)
+    guard.check()
+    assert conn.interrupted
+
+
+def test_instance_memory_reads_a_running_query_and_skips_a_closed_one():
+    duckdb = pytest.importorskip("duckdb")
+    con = duckdb.connect(":memory:")
+    con.sql("SET threads=2; SET memory_limit='300MB'; SET lock_configuration=true")
+    peak, done = [0], threading.Event()
+
+    def watch():
+        while not done.is_set():
+            peak[0] = max(peak[0], instance_memory(con) or 0)
+            time.sleep(0.02)
+
+    w = threading.Thread(target=watch)
+    w.start()
+    con.sql("SELECT count(*) FROM (SELECT md5(i::VARCHAR) s, count(*) "
+            "FROM range(2000000) t(i) GROUP BY s)").fetchone()
+    done.set()
+    w.join()
+    assert peak[0] > 1 << 20
+    con.close()
+    assert instance_memory(con) is None
+
+
+def test_real_memory_interrupt_stops_the_larger_query(tmp_path):
+    """Two real DuckDB queries hold memory at once; with the pod reported over
+    its mark, the guard reads each instance and stops the one holding more. The
+    other runs to completion: the stopped one's memory counts as freeing, so the
+    guard does not stop a second query while the first unwinds."""
+    duckdb = pytest.importorskip("duckdb")
+    go = threading.Event()
+    guard, _ = _mem_guard(MemorySample(1 * _GiB, 100 * _GiB, 400 * _GiB))
+    # From `go` on, the pod sits just over its 90% mark because of the big
+    # query, and the cgroup keeps showing that memory after the interrupt (it
+    # lags the free), so only the freeing count keeps the small query safe.
+    held = [0]
+
+    def read():
+        if not go.is_set():
+            return MemorySample(1 * _GiB, 100 * _GiB, 400 * _GiB)
+        if not guard._interrupted and "big" in conns:
+            held[0] = instance_memory(conns["big"]) or held[0]
+        return MemorySample(int(89.9 * _GiB) + held[0], 100 * _GiB, 400 * _GiB)
+    guard._read_memory = read
+    stop = threading.Event()
+
+    def watchdog():
+        while not stop.is_set():
+            guard.check()
+            time.sleep(0.05)
+
+    outcome, conns = {}, {}
+
+    def run(name, limit, rows):
+        c = duckdb.connect(":memory:")
+        c.sql(f"SET threads=2; SET memory_limit='{limit}'; "
+              f"SET temp_directory='{tmp_path / ('duckdb-' + name)}'")
+        conns[name] = c
+        d = guard.register(c)
+        try:
+            c.sql(f"SELECT count(*) FROM (SELECT md5(i::VARCHAR) s, count(*) "
+                  f"FROM range({rows}) t(i) GROUP BY s)").fetchone()
+            outcome[name] = "done"
+        except duckdb.InterruptException:
+            outcome[name] = guard.was_interrupted(d)
+        finally:
+            guard.unregister(d)
+            c.close()
+
+    wd = threading.Thread(target=watchdog)
+    wd.start()
+    big = threading.Thread(target=run, args=("big", "1GB", 30_000_000))
+    small = threading.Thread(target=run, args=("small", "100MB", 2_000_000))
+    big.start()
+    deadline = time.time() + 30
+    while time.time() < deadline and (instance_memory(conns["big"]) if "big" in conns else 0) < 300 << 20:
+        time.sleep(0.02)
+    small.start()
+    time.sleep(0.2)
+    go.set()
+    big.join()
+    small.join()
+    stop.set()
+    wd.join()
+    assert outcome == {"big": "memory", "small": "done"}
