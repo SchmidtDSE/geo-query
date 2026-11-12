@@ -51,7 +51,7 @@ spec:
                     values: ["us-west"]
       containers:
       - name: server
-        image: ghcr.io/schmidtdse/geo-query:v0.9.8@sha256:a95584742ea7e39aa6b428cf56f13b82ab709580be5638a20081b9ac211180c8
+        image: ghcr.io/schmidtdse/geo-query:v0.9.9@sha256:cbe50b1ec305c0084b1a6a6c61482f434b1f1b2e61e2c81127e5be63b3e2defd
         imagePullPolicy: IfNotPresent
         env:
         # Release identity is supplied HERE, not baked into the image (#413). The
@@ -62,7 +62,7 @@ spec:
         # the image's own value is the commit it was built from, which stays correct
         # through a retag.
         - name: APP_VERSION
-          value: "v0.9.8"
+          value: "v0.9.9"
         - name: STAC_CATALOG_URL
           value: "https://s3-west.nrp-nautilus.io/public-data/stac/catalog.json"
         # NRP Ceph through its external https endpoint, not the internal RGW
@@ -134,9 +134,12 @@ spec:
         # passes — the kernel accepts the connection regardless of whether the
         # app writes a response — and HAProxy keeps routing ~50% of traffic to a
         # wedged backend. See issue #157.
+        # Readiness uses /readyz, which also fails while the pod has no STAC
+        # catalog (#429) or is low on spill disk (#428), so the Service sends
+        # requests to other replicas. Liveness stays on /healthz.
         readinessProbe:
           httpGet:
-            path: /healthz
+            path: /readyz
             port: 8000
           initialDelaySeconds: 15
           periodSeconds: 5

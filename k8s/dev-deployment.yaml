@@ -141,9 +141,12 @@ spec:
         # passes — the kernel accepts the connection regardless of whether the
         # app writes a response — and HAProxy keeps routing ~50% of traffic to a
         # wedged backend. See issue #157.
+        # Readiness uses /readyz, which also fails while the pod has no STAC
+        # catalog (#429) or is low on spill disk (#428), so the Service sends
+        # requests to other replicas. Liveness stays on /healthz.
         readinessProbe:
           httpGet:
-            path: /healthz
+            path: /readyz
             port: 8000
           initialDelaySeconds: 15
           periodSeconds: 5
