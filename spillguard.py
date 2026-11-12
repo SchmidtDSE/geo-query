@@ -37,6 +37,7 @@ off; MEMORY_GUARD=0 turns the memory half off.
 import os
 import sys
 import threading
+import itertools
 import time
 import weakref
 from typing import NamedTuple
@@ -184,7 +185,8 @@ class SpillGuard:
                  memory_interrupt_fraction: float | None = None,
                  node_drain_floor: int | None = None,
                  node_interrupt_floor: int | None = None,
-                 node_min_pod: int | None = None):
+                 node_min_pod: int | None = None,
+                 memory_min_victim: int | None = None):
         self.limit = limit
         self.root = root or spill_root()
         self.drain_at = (limit * (drain_fraction if drain_fraction is not None
@@ -207,8 +209,16 @@ class SpillGuard:
                                      else _env_bytes("NODE_MEMORY_INTERRUPT_FLOOR", 8 << 30))
         self.node_min_pod = (node_min_pod if node_min_pod is not None
                              else _env_bytes("NODE_MEMORY_MIN_POD", 8 << 30))
+        # Smallest instance worth stopping for memory: anything less frees too
+        # little to matter, so the guard looks past it.
+        self.memory_min_victim = (memory_min_victim if memory_min_victim is not None
+                                  else _env_bytes("MEMORY_MIN_VICTIM", 1 << 30))
         self._lock = threading.Lock()
         self._conns: dict[str, weakref.ref] = {}
+        # Spill directory -> registration order, so the memory guard can stop
+        # the newest query first.
+        self._order: dict[str, int] = {}
+        self._seq = itertools.count()
         # Spill directory -> (time.monotonic() of the interrupt, "disk" | "memory").
         # Kept past unregister so the query can still tell why it failed; pruned
         # after a minute.
@@ -237,7 +247,9 @@ class SpillGuard:
             return None
         if temp_dir:
             with self._lock:
-                self._conns[os.path.normpath(temp_dir)] = weakref.ref(conn)
+                d = os.path.normpath(temp_dir)
+                self._conns[d] = weakref.ref(conn)
+                self._order[d] = next(self._seq)
         return temp_dir
 
     def unregister(self, temp_dir: str | None) -> None:
@@ -245,6 +257,7 @@ class SpillGuard:
             with self._lock:
                 d = os.path.normpath(temp_dir)
                 self._conns.pop(d, None)
+                self._order.pop(d, None)
                 if d in self._memory_freeing:
                     expiry, nbytes = self._memory_freeing[d]
                     self._memory_freeing[d] = (min(expiry, time.monotonic() + _FREEING_GRACE), nbytes)
@@ -263,6 +276,7 @@ class SpillGuard:
         with self._lock:
             for d in [d for d, ref in self._conns.items() if ref() is None]:
                 del self._conns[d]
+                self._order.pop(d, None)
             for d in [d for d, (t, _) in self._interrupted.items() if now - t > 60]:
                 del self._interrupted[d]
             for d in [d for d, (expiry, _) in self._memory_freeing.items() if now > expiry]:
@@ -300,7 +314,8 @@ class SpillGuard:
         if self.memory_enabled:
             self._check_memory()
 
-    def _interrupt(self, victim: str, reason: str, nbytes: int, what: str) -> None:
+    def _interrupt(self, victim: str, reason: str, nbytes: int, what: str,
+                   which: str = "the largest") -> None:
         with self._lock:
             ref = self._conns.get(victim)
             conn = ref() if ref else None
@@ -309,7 +324,7 @@ class SpillGuard:
                 self._memory_freeing[victim] = (time.monotonic() + _FREEING_TTL, nbytes)
         if conn is None:
             return
-        print(f"🛑 {what}; interrupting the largest ({nbytes / 2**30:.1f} GiB, {victim})",
+        print(f"🛑 {what}; interrupting {which} ({nbytes / 2**30:.1f} GiB, {victim})",
               file=sys.stderr)
         try:
             conn.interrupt()
@@ -384,21 +399,33 @@ class SpillGuard:
         if not (pod_critical or node_critical):
             return
         with self._lock:
-            live = [(d, ref()) for d, ref in self._conns.items() if d not in self._interrupted]
+            live = [(self._order.get(d, -1), d, ref()) for d, ref in self._conns.items()
+                    if d not in self._interrupted]
         candidates = []
-        for d, conn in live:
+        for order, d, conn in live:
             if conn is None:
                 continue
             nbytes = instance_memory(conn)
             if nbytes:
-                candidates.append((nbytes, d))
+                candidates.append((order, nbytes, d))
         if not candidates:
             return
-        nbytes, victim = max(candidates)
+        # Stop the newest query that holds enough to matter. The older ones have
+        # done the most work, and each stays within its own memory_limit once
+        # the newcomer is gone. If that does not free enough, the next check
+        # stops the next newest. Only when nothing is big enough does it fall
+        # back to the largest.
+        big = [c for c in candidates if c[1] >= self.memory_min_victim]
+        if big:
+            _, nbytes, victim = max(big)
+            which = "the newest"
+        else:
+            _, nbytes, victim = max(candidates, key=lambda c: c[1])
+            which = "the largest"
         what = (f"memory guard: pod {used / 2**30:.1f} GiB of {limit / 2**30:.1f} GiB"
                 if pod_critical else
                 f"memory guard: node has {available / 2**30:.1f} GiB available")
-        self._interrupt(victim, "memory", nbytes, what)
+        self._interrupt(victim, "memory", nbytes, what, which)
 
     def start(self, interval: float | None = None) -> threading.Thread | None:
         if not self.enabled:

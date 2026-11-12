@@ -231,19 +231,52 @@ def test_node_memory_counts_only_while_the_pod_holds_some():
     assert not guard.under_pressure()
 
 
-def test_memory_interrupts_the_largest_instance_once(tmp_path):
+def test_memory_interrupts_the_newest_big_instance_once(tmp_path):
     guard, box = _mem_guard(MemorySample(95 * _GiB, 100 * _GiB, 400 * _GiB))
-    small, big = _FakeConn(str(tmp_path / "duckdb-s")), _FakeConn(str(tmp_path / "duckdb-b"))
-    small.memory, big.memory = 20 * _GiB, 70 * _GiB
-    guard.register(small)
-    guard.register(big)
+    old, new = _FakeConn(str(tmp_path / "duckdb-o")), _FakeConn(str(tmp_path / "duckdb-n"))
+    old.memory, new.memory = 70 * _GiB, 20 * _GiB
+    guard.register(old)
+    guard.register(new)
     guard.check()
-    assert big.interrupted and not small.interrupted
-    big.interrupted = False
-    guard.check()  # still 95 GiB on the cgroup, but 70 of it is being freed
-    assert not big.interrupted and not small.interrupted
-    assert guard.was_interrupted(big.temp_dir) == "memory"
-    assert guard.was_interrupted(small.temp_dir) is None
+    assert new.interrupted and not old.interrupted
+    new.interrupted = False
+    box[0] = MemorySample(110 * _GiB, 100 * _GiB, 400 * _GiB)  # 90 after the 20 freeing
+    guard.check()
+    assert old.interrupted, "still critical once the newest is counted as freed"
+    assert guard.was_interrupted(new.temp_dir) == "memory"
+
+
+def test_memory_stops_only_one_while_it_frees(tmp_path):
+    guard, _ = _mem_guard(MemorySample(95 * _GiB, 100 * _GiB, 400 * _GiB))
+    old, new = _FakeConn(str(tmp_path / "duckdb-o")), _FakeConn(str(tmp_path / "duckdb-n"))
+    old.memory, new.memory = 70 * _GiB, 20 * _GiB
+    guard.register(old)
+    guard.register(new)
+    guard.check()
+    guard.check()  # 95 - 20 freeing = 75, under the mark
+    assert new.interrupted and not old.interrupted
+    assert guard.was_interrupted(old.temp_dir) is None
+
+
+def test_memory_looks_past_a_newest_too_small_to_matter(tmp_path):
+    guard, _ = _mem_guard(MemorySample(95 * _GiB, 100 * _GiB, 400 * _GiB))
+    old, mid, tiny = (_FakeConn(str(tmp_path / f"duckdb-{n}")) for n in "omt")
+    old.memory, mid.memory, tiny.memory = 50 * _GiB, 30 * _GiB, 200 << 20
+    for c in (old, mid, tiny):
+        guard.register(c)
+    guard.check()
+    assert mid.interrupted and not old.interrupted and not tiny.interrupted
+
+
+def test_memory_falls_back_to_the_largest_when_none_is_big(tmp_path):
+    guard, _ = _mem_guard(MemorySample(95 * _GiB, 100 * _GiB, 400 * _GiB),
+                          memory_min_victim=1 * _GiB)
+    a, b = _FakeConn(str(tmp_path / "duckdb-a")), _FakeConn(str(tmp_path / "duckdb-b"))
+    a.memory, b.memory = 800 << 20, 300 << 20
+    guard.register(a)
+    guard.register(b)
+    guard.check()
+    assert a.interrupted and not b.interrupted
 
 
 def test_node_floor_interrupts_too(tmp_path):
@@ -277,24 +310,25 @@ def test_instance_memory_reads_a_running_query_and_skips_a_closed_one():
     assert instance_memory(con) is None
 
 
-def test_real_memory_interrupt_stops_the_larger_query(tmp_path):
+def test_real_memory_interrupt_stops_the_newer_query(tmp_path):
     """Two real DuckDB queries hold memory at once; with the pod reported over
-    its mark, the guard reads each instance and stops the one holding more. The
-    other runs to completion: the stopped one's memory counts as freeing, so the
-    guard does not stop a second query while the first unwinds."""
+    its mark, the guard stops the one that started later and the older one runs
+    to completion. The stopped query's memory counts as freeing, so the guard
+    does not go on to stop the older query while the newer one unwinds."""
     duckdb = pytest.importorskip("duckdb")
     go = threading.Event()
-    guard, _ = _mem_guard(MemorySample(1 * _GiB, 100 * _GiB, 400 * _GiB))
-    # From `go` on, the pod sits just over its 90% mark because of the big
+    guard, _ = _mem_guard(MemorySample(1 * _GiB, 100 * _GiB, 400 * _GiB),
+                          memory_min_victim=32 << 20)
+    # From `go` on, the pod sits just over its 90% mark because of the newer
     # query, and the cgroup keeps showing that memory after the interrupt (it
-    # lags the free), so only the freeing count keeps the small query safe.
+    # lags the free), so only the freeing count keeps the older query safe.
     held = [0]
 
     def read():
         if not go.is_set():
             return MemorySample(1 * _GiB, 100 * _GiB, 400 * _GiB)
-        if not guard._interrupted and "big" in conns:
-            held[0] = instance_memory(conns["big"]) or held[0]
+        if not guard._interrupted and "new" in conns:
+            held[0] = instance_memory(conns["new"]) or held[0]
         return MemorySample(int(89.9 * _GiB) + held[0], 100 * _GiB, 400 * _GiB)
     guard._read_memory = read
     stop = threading.Event()
@@ -322,19 +356,23 @@ def test_real_memory_interrupt_stops_the_larger_query(tmp_path):
             guard.unregister(d)
             c.close()
 
+    def wait_for(name, nbytes):
+        deadline = time.time() + 30
+        while time.time() < deadline and (
+                instance_memory(conns[name]) if name in conns else 0) < nbytes:
+            time.sleep(0.02)
+
     wd = threading.Thread(target=watchdog)
     wd.start()
-    big = threading.Thread(target=run, args=("big", "1GB", 30_000_000))
-    small = threading.Thread(target=run, args=("small", "100MB", 2_000_000))
-    big.start()
-    deadline = time.time() + 30
-    while time.time() < deadline and (instance_memory(conns["big"]) if "big" in conns else 0) < 300 << 20:
-        time.sleep(0.02)
-    small.start()
-    time.sleep(0.2)
+    old = threading.Thread(target=run, args=("old", "1GB", 8_000_000))
+    new = threading.Thread(target=run, args=("new", "300MB", 8_000_000))
+    old.start()
+    wait_for("old", 200 << 20)
+    new.start()
+    wait_for("new", 64 << 20)
     go.set()
-    big.join()
-    small.join()
+    old.join()
+    new.join()
     stop.set()
     wd.join()
-    assert outcome == {"big": "memory", "small": "done"}
+    assert outcome == {"old": "done", "new": "memory"}

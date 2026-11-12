@@ -212,8 +212,10 @@ The deployment:
   evicting the pod. It checks every second (`SPILL_GUARD_INTERVAL`).
 - Guards memory the same way, since DuckDB's `memory_limit` is also per query. It
   drains the pod at half its memory limit (`MEMORY_DRAIN_FRACTION`), and at 90%
-  (`MEMORY_INTERRUPT_FRACTION`) interrupts the query holding the most memory,
-  before the OOM killer stops the whole pod. It also watches the node: while the
+  (`MEMORY_INTERRUPT_FRACTION`) interrupts the newest query holding at least
+  1 GiB (`MEMORY_MIN_VICTIM`), before the OOM killer stops the whole pod. Older
+  queries have done the most work and keep running; if stopping the newest does
+  not free enough, the next check stops the next newest. It also watches the node: while the
   pod holds 8 GiB or more (`NODE_MEMORY_MIN_POD`), it drains when the node has
   less than 16 GiB available (`NODE_MEMORY_DRAIN_FLOOR`) and interrupts below
   8 GiB (`NODE_MEMORY_INTERRUPT_FLOOR`), because the pod's 2 Gi request does not
