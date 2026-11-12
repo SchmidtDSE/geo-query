@@ -13,7 +13,7 @@ allocated blocks, and acts on the pod-wide total:
   under pressure: /readyz fails, so the Service sends new requests to other
   replicas, and new queries that still arrive are turned away with a retry
   message. Pressure clears once the total falls below 80% of the drain mark.
-- At the interrupt mark (SPILL_INTERRUPT_FRACTION, default 0.85) it interrupts
+- At the interrupt mark (SPILL_INTERRUPT_FRACTION, default 0.8) it interrupts
   the connection with the largest spill. That query fails, DuckDB frees its spill
   files, and everything else on the pod keeps running.
 
@@ -83,7 +83,7 @@ class SpillGuard:
                                   else _fraction("SPILL_DRAIN_FRACTION", 0.5))
                          if limit else None)
         self.interrupt_at = (limit * (interrupt_fraction if interrupt_fraction is not None
-                                      else _fraction("SPILL_INTERRUPT_FRACTION", 0.85))
+                                      else _fraction("SPILL_INTERRUPT_FRACTION", 0.8))
                              if limit else None)
         self._lock = threading.Lock()
         self._conns: dict[str, weakref.ref] = {}
@@ -193,7 +193,10 @@ class SpillGuard:
                   file=sys.stderr)
             return None
         if interval is None:
-            interval = _fraction("SPILL_GUARD_INTERVAL", 2.0)
+            # Two heavy spills together grew ~2.5 GiB between 2s checks on dev, so
+            # the interrupt fired 4 GiB past its mark. Checking every second and
+            # interrupting at 80% leaves ~8 GiB before the eviction limit (#428).
+            interval = _fraction("SPILL_GUARD_INTERVAL", 1.0)
 
         def loop():
             while True:

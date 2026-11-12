@@ -207,9 +207,9 @@ The deployment:
   watchdog measures them all against the pod's ephemeral-storage limit
   (`POD_EPHEMERAL_LIMIT`). At half the limit (`SPILL_DRAIN_FRACTION`) the pod
   fails `/readyz` and turns new queries away with a retry message, so they go to
-  other replicas. At 85% (`SPILL_INTERRUPT_FRACTION`) it interrupts the query
+  other replicas. At 80% (`SPILL_INTERRUPT_FRACTION`) it interrupts the query
   with the largest spill, which fails with an error rather than the kubelet
-  evicting the pod.
+  evicting the pod. It checks every second (`SPILL_GUARD_INTERVAL`).
 - Includes `/healthz` (liveness) and `/readyz` (readiness) probes for safe
   rollouts. `/readyz` also fails while the pod has no STAC catalog, so a pod
   that booted with `STAC_ALLOW_DEGRADED_START` leaves the Service until its
