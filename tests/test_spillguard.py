@@ -77,24 +77,49 @@ class _FakeConn:
         return C()
 
 
-def test_interrupts_the_largest_registered_spill_once(tmp_path):
+def test_interrupts_the_newest_big_spill_once(tmp_path):
     guard = SpillGuard(memory=False, limit=10 << 20, root=str(tmp_path),
-                       drain_fraction=0.5, interrupt_fraction=0.8)
-    small, big = _FakeConn(str(tmp_path / "duckdb-small")), _FakeConn(str(tmp_path / "duckdb-big"))
-    guard.register(small)
-    guard.register(big)
-    _fill(small.temp_dir, 2 << 20)
-    _fill(big.temp_dir, 7 << 20)
+                       drain_fraction=0.5, interrupt_fraction=0.8,
+                       spill_min_victim=1 << 20)
+    old, new = _FakeConn(str(tmp_path / "duckdb-old")), _FakeConn(str(tmp_path / "duckdb-new"))
+    guard.register(old)
+    guard.register(new)
+    _fill(old.temp_dir, 7 << 20)
+    _fill(new.temp_dir, 2 << 20)
     guard.check()
-    assert big.interrupted and not small.interrupted
-    big.interrupted = False
-    guard.check()  # still over on disk, but the big spill is already being freed
-    assert not big.interrupted and not small.interrupted
-    _fill(small.temp_dir, 9 << 20)  # the small one grows past the mark on its own
+    assert new.interrupted and not old.interrupted
+    new.interrupted = False
+    guard.check()  # still over on disk, but the newer spill is already being freed
+    assert not new.interrupted and not old.interrupted
+    _fill(old.temp_dir, 9 << 20)  # the older one grows past the mark on its own
     guard.check()
-    assert small.interrupted and not big.interrupted
-    assert guard.was_interrupted(big.temp_dir)
-    assert not guard.was_interrupted(big.temp_dir)  # consumed
+    assert old.interrupted and not new.interrupted
+    assert guard.was_interrupted(new.temp_dir)
+    assert not guard.was_interrupted(new.temp_dir)  # consumed
+
+
+def test_spill_looks_past_a_newest_too_small_to_matter(tmp_path):
+    guard = SpillGuard(memory=False, limit=10 << 20, root=str(tmp_path),
+                       interrupt_fraction=0.8, spill_min_victim=1 << 20)
+    old, tiny = _FakeConn(str(tmp_path / "duckdb-old")), _FakeConn(str(tmp_path / "duckdb-tiny"))
+    guard.register(old)
+    guard.register(tiny)
+    _fill(old.temp_dir, 8 << 20)
+    _fill(tiny.temp_dir, 512 << 10)
+    guard.check()
+    assert old.interrupted and not tiny.interrupted
+
+
+def test_spill_falls_back_to_the_largest_when_none_is_big(tmp_path):
+    guard = SpillGuard(memory=False, limit=10 << 20, root=str(tmp_path),
+                       interrupt_fraction=0.5, spill_min_victim=100 << 20)
+    a, b = _FakeConn(str(tmp_path / "duckdb-a")), _FakeConn(str(tmp_path / "duckdb-b"))
+    guard.register(a)
+    guard.register(b)
+    _fill(a.temp_dir, 5 << 20)
+    _fill(b.temp_dir, 2 << 20)
+    guard.check()
+    assert a.interrupted and not b.interrupted
 
 
 def test_unregistered_spill_is_never_interrupted(tmp_path):
@@ -108,7 +133,7 @@ def test_unregistered_spill_is_never_interrupted(tmp_path):
 
 
 def test_real_concurrent_spills_stop_one_query_not_the_process(monkeypatch, tmp_path):
-    """Two DuckDB queries spill at once. The guard interrupts the larger before the
+    """Two DuckDB queries spill at once. The guard interrupts one before the
     pod-wide total passes its mark; the other runs to completion."""
     duckdb = pytest.importorskip("duckdb")
     monkeypatch.setenv("DUCKDB_TEMP_ROOT", str(tmp_path))

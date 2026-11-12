@@ -207,15 +207,17 @@ The deployment:
   watchdog measures them all against the pod's ephemeral-storage limit
   (`POD_EPHEMERAL_LIMIT`). At half the limit (`SPILL_DRAIN_FRACTION`) the pod
   fails `/readyz` and turns new queries away with a retry message, so they go to
-  other replicas. At 80% (`SPILL_INTERRUPT_FRACTION`) it interrupts the query
-  with the largest spill, which fails with an error rather than the kubelet
-  evicting the pod. It checks every second (`SPILL_GUARD_INTERVAL`).
+  other replicas. At 80% (`SPILL_INTERRUPT_FRACTION`) it interrupts the newest
+  query that has spilled at least 1 GiB (`SPILL_MIN_VICTIM`), which fails with
+  an error rather than the kubelet evicting the pod. Older queries have done the
+  most work and keep running; if stopping the newest does not free enough, the
+  next check stops the next newest, and only when no spill is that big does it
+  take the largest. It checks every second (`SPILL_GUARD_INTERVAL`).
 - Guards memory the same way, since DuckDB's `memory_limit` is also per query. It
   drains the pod at half its memory limit (`MEMORY_DRAIN_FRACTION`), and at 90%
   (`MEMORY_INTERRUPT_FRACTION`) interrupts the newest query holding at least
-  1 GiB (`MEMORY_MIN_VICTIM`), before the OOM killer stops the whole pod. Older
-  queries have done the most work and keep running; if stopping the newest does
-  not free enough, the next check stops the next newest. It also watches the node: while the
+  1 GiB (`MEMORY_MIN_VICTIM`), chosen as for disk, before the OOM killer stops
+  the whole pod. It also watches the node: while the
   pod holds 8 GiB or more (`NODE_MEMORY_MIN_POD`), it drains when the node has
   less than 16 GiB available (`NODE_MEMORY_DRAIN_FLOOR`) and interrupts below
   8 GiB (`NODE_MEMORY_INTERRUPT_FLOOR`), because the pod's 2 Gi request does not
