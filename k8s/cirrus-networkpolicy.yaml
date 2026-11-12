@@ -1,7 +1,7 @@
 # Network containment for duckdb-mcp on cirrus (k3s, kube-router NetworkPolicy).
 #
 # The server runs caller-supplied SQL, so it must not become an SSRF proxy.
-# Egress is limited to the in-cluster MinIO S3 API, cluster DNS, and AWS S3
+# Egress is limited to the in-cluster MinIO / rustfs-s3 S3 API, cluster DNS, and AWS S3
 # us-west-2 on 443 (source.coop public data); nothing
 # else — not the internet, not other in-cluster services, not the public
 # minio.carlboettiger.info host. S3_SOURCES in cirrus-deployment.yaml routes the
@@ -53,6 +53,18 @@ spec:
       podSelector:
         matchLabels:
           k8s-app: minio-app
+    ports:
+    - port: 9000
+      protocol: TCP
+  # rustfs-s3, MinIO's replacement (boettiger-lab/k8s platform/rustfs). At the
+  # cutover minio-svc becomes an alias of it, so this rule must be in place first.
+  - to:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: rustfs
+      podSelector:
+        matchLabels:
+          app: rustfs-s3
     ports:
     - port: 9000
       protocol: TCP
