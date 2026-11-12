@@ -149,3 +149,13 @@ def test_real_concurrent_spills_stop_one_query_not_the_process(monkeypatch, tmp_
     wd.join()
     assert len(errors) == 1 and results == [expected]
     assert list(tmp_path.iterdir()) == []
+
+
+def test_default_marks_leave_room_before_eviction(monkeypatch, tmp_path):
+    """Dev (#428): two spills grew ~2.5 GiB between 2s checks, so the defaults
+    interrupt at 80% and check every second."""
+    for var in ("SPILL_DRAIN_FRACTION", "SPILL_INTERRUPT_FRACTION", "SPILL_GUARD_INTERVAL"):
+        monkeypatch.delenv(var, raising=False)
+    guard = SpillGuard(limit=50 << 30, root=str(tmp_path))
+    assert guard.drain_at == 25 << 30
+    assert guard.interrupt_at == 40 << 30
