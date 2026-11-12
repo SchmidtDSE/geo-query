@@ -9,7 +9,7 @@ import sys
 import anyio
 from contextlib import contextmanager
 from mcp.server.fastmcp import FastMCP
-from mcp.server.transport_security import TransportSecuritySettings
+from rebinding import transport_security_from_env, describe as _describe_transport_security
 from mcp.shared.session import BaseSession
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import JSONResponse
@@ -37,10 +37,19 @@ BaseSession.send_notification = _resilient_send_notification
 APP_VERSION = os.environ.get("APP_VERSION", "dev")
 GIT_SHA = os.environ.get("GIT_SHA", "unknown")
 
+# DNS-rebinding protection is off unless the deployment lists its hosts (#435):
+# public deployments are reached from any origin, under hostnames the ingress
+# picks; a server on localhost should set MCP_ALLOWED_HOSTS/ORIGINS.
+try:
+    _TRANSPORT_SECURITY = transport_security_from_env()
+except ValueError as e:
+    print(f"💀 {e}", file=sys.stderr)
+    sys.exit(1)
+
 mcp = FastMCP(
     "DuckDB-S3-Geo-Isolated",
     stateless_http=True,
-    transport_security=TransportSecuritySettings(enable_dns_rebinding_protection=False)
+    transport_security=_TRANSPORT_SECURITY,
 )
 
 # Report APP_VERSION in the MCP `initialize` handshake (serverInfo.version) so clients
@@ -1404,6 +1413,7 @@ if __name__ == "__main__":
               + ("; /tiles is public" if _PUBLIC_TILES else ""), file=sys.stderr)
     else:
         print("🔓 Auth disabled (no MCP_AUTH_TOKENS_DIR or MCP_AUTH_TOKEN)", file=sys.stderr)
+    print(_describe_transport_security(_TRANSPORT_SECURITY), file=sys.stderr)
 
     print("🚀 Starting DuckDB MCP Server...", file=sys.stderr)
     print(f"📂 STAC catalog: {STAC_CATALOG_URL}", file=sys.stderr)
