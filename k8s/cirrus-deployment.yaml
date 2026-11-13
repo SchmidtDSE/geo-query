@@ -148,7 +148,9 @@ spec:
           initialDelaySeconds: 15
           periodSeconds: 5
           timeoutSeconds: 2
-          failureThreshold: 3
+          # One failure takes the pod out within ~5 s, so a second heavy query
+          # is less likely to land on a pod already draining (#428).
+          failureThreshold: 1
         livenessProbe:
           httpGet:
             path: /healthz

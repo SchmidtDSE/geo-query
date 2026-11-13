@@ -1019,8 +1019,10 @@ class TestHealthz:
         from starlette.testclient import TestClient
         monkeypatch.setattr(server, "_stac_catalog_loaded", lambda: True)
         monkeypatch.setattr(server.SPILL_GUARD, "under_pressure", lambda: True)
-        r = TestClient(self._build_app()).get("/readyz")
-        assert r.status_code == 503 and "spill" in r.json()["reason"]
+        for reason in ("spill disk under pressure", "node memory under pressure"):
+            monkeypatch.setattr(server.SPILL_GUARD, "pressure_reason", lambda: reason)
+            r = TestClient(self._build_app()).get("/readyz")
+            assert r.status_code == 503 and r.json()["reason"] == reason
 
     def test_readyz_opt_out_serves_without_a_catalog(self, monkeypatch):
         import server
@@ -1947,6 +1949,10 @@ class TestSpillGuardInQuery:
                 yield Proxy()
         monkeypatch.setattr(server, "get_isolated_db", wrapped)
         assert server.query("SELECT 1") == server.SPILL_INTERRUPTED_MESSAGE
+        # Stopped for memory: the message says memory, not disk.
+        monkeypatch.setattr(server.SPILL_GUARD, "was_interrupted",
+                            lambda d: "memory" if d in stopped else None)
+        assert server.query("SELECT 1") == server.SPILL_INTERRUPTED_MESSAGES["memory"]
         guard_stops[0] = False  # an interrupt the guard didn't make reads as a plain error
         assert server.query("SELECT 1").startswith("SQL Error:")
 
