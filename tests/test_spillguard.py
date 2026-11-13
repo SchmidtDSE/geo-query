@@ -338,6 +338,41 @@ def test_memory_looks_ahead_at_the_rate_of_growth(tmp_path):
     assert conn.interrupted
 
 
+def test_backstop_stops_the_next_query_while_the_first_still_holds_memory(tmp_path):
+    """A stopped query's memory counts as freed, but if the pod keeps climbing
+    past the hard mark before DuckDB lets go of it, the next query is stopped."""
+    now = [0.0]
+    guard, box = _mem_guard(MemorySample(91 * _GiB, 100 * _GiB, 400 * _GiB),
+                            memory_lookahead=0.0, clock=lambda: now[0])
+    old, new = _FakeConn(str(tmp_path / "duckdb-o")), _FakeConn(str(tmp_path / "duckdb-n"))
+    old.memory, new.memory = 30 * _GiB, 60 * _GiB
+    guard.register(old)
+    guard.register(new)
+    guard.check()
+    assert new.interrupted and not old.interrupted
+    box[0], now[0] = MemorySample(94 * _GiB, 100 * _GiB, 400 * _GiB), 1.0
+    guard.check()  # rising, but under the hard mark: wait for the free
+    assert not old.interrupted
+    box[0], now[0] = MemorySample(96 * _GiB, 100 * _GiB, 400 * _GiB), 2.0
+    guard.check()  # 96 - 60 freeing = 36 is far under 90, but the pod holds 96
+    assert old.interrupted
+
+
+def test_backstop_waits_while_memory_is_falling(tmp_path):
+    now = [0.0]
+    guard, box = _mem_guard(MemorySample(97 * _GiB, 100 * _GiB, 400 * _GiB),
+                            memory_lookahead=0.0, clock=lambda: now[0])
+    old, new = _FakeConn(str(tmp_path / "duckdb-o")), _FakeConn(str(tmp_path / "duckdb-n"))
+    old.memory, new.memory = 30 * _GiB, 60 * _GiB
+    guard.register(old)
+    guard.register(new)
+    guard.check()
+    assert new.interrupted
+    box[0], now[0] = MemorySample(96 * _GiB, 100 * _GiB, 400 * _GiB), 1.0
+    guard.check()  # over the hard mark but falling: the free is under way
+    assert not old.interrupted
+
+
 def test_memory_is_checked_more_often_than_disk(tmp_path):
     counts = {"disk": 0, "memory": 0}
 

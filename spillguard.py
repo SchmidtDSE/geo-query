@@ -23,7 +23,10 @@ at SPILL_DRAIN_FRACTION (0.5), interrupt at SPILL_INTERRUPT_FRACTION (0.8).
 Memory has two signals. The pod's own working set (cgroup memory.current less
 inactive page cache) against its limit (memory.max, else POD_MEMORY_LIMIT):
 drain at MEMORY_DRAIN_FRACTION (0.5), interrupt at MEMORY_INTERRUPT_FRACTION
-(0.9), short of the OOM kill. And the node's MemAvailable from /proc/meminfo,
+(0.9), short of the OOM kill. A stopped query's memory counts as freed so the
+guard does not stop a second one meanwhile, but DuckDB can take many seconds to
+release it, so a backstop on the raw reading stops the next query anyway once
+the pod passes MEMORY_HARD_FRACTION (0.95) and is still rising. And the node's MemAvailable from /proc/meminfo,
 which a container sees for the whole node: drain below NODE_MEMORY_DRAIN_FLOOR
 (16GiB), interrupt below NODE_MEMORY_INTERRUPT_FLOOR (8GiB). The node signal
 counts only while the pod itself holds at least NODE_MEMORY_MIN_POD (8GiB), so
@@ -188,7 +191,8 @@ class SpillGuard:
                  node_min_pod: int | None = None,
                  memory_min_victim: int | None = None,
                  spill_min_victim: int | None = None,
-                 memory_lookahead: float | None = None, clock=None):
+                 memory_lookahead: float | None = None, clock=None,
+                 memory_hard_fraction: float | None = None):
         self.limit = limit
         self.root = root or spill_root()
         self.drain_at = (limit * (drain_fraction if drain_fraction is not None
@@ -203,6 +207,8 @@ class SpillGuard:
         self.memory_lookahead = (memory_lookahead if memory_lookahead is not None
                                  else _fraction("MEMORY_LOOKAHEAD", 1.0))
         self._clock = clock or time.monotonic
+        self.memory_hard_fraction = (memory_hard_fraction if memory_hard_fraction is not None
+                                     else _fraction("MEMORY_HARD_FRACTION", 0.95))
         self._last_pod_used: tuple[float, int] | None = None
         # Smallest spill worth stopping: anything less frees too little to matter.
         self.spill_min_victim = (spill_min_victim if spill_min_victim is not None
@@ -443,7 +449,13 @@ class SpillGuard:
 
         pod_critical = bool(limit) and projected >= limit * self.memory_interrupt_fraction
         node_critical = node_counts and available < self.node_interrupt_floor
-        if not (pod_critical or node_critical):
+        # Backstop: an interrupted query can hold its memory for many seconds
+        # (~16 s for 68 GiB on dev) while the others keep growing. Counting it
+        # as freed must not let the pod reach its limit, so once the raw reading
+        # passes the hard mark and is still rising, stop the next query too.
+        hard = (bool(limit) and rate > 0
+                and raw >= limit * self.memory_hard_fraction)
+        if not (pod_critical or node_critical or hard):
             return
         with self._lock:
             live = [(self._order.get(d, -1), d, ref()) for d, ref in self._conns.items()
@@ -458,10 +470,12 @@ class SpillGuard:
         if not candidates:
             return
         nbytes, victim, which = self._pick(candidates, self.memory_min_victim)
-        what = (f"memory guard: pod {raw / 2**30:.1f} GiB of {limit / 2**30:.1f} GiB"
-                + (f", rising {rate / 2**30:.1f} GiB/s" if rate else "")
-                if pod_critical else
-                f"memory guard: node has {available / 2**30:.1f} GiB available")
+        if pod_critical or hard:
+            what = (f"memory guard: pod {raw / 2**30:.1f} GiB of {limit / 2**30:.1f} GiB"
+                    + (f", rising {rate / 2**30:.1f} GiB/s" if rate else "")
+                    + (f", {freeing / 2**30:.1f} GiB still being freed" if freeing and not pod_critical else ""))
+        else:
+            what = f"memory guard: node has {available / 2**30:.1f} GiB available"
         self._interrupt(victim, "memory", nbytes, what, which)
 
     def start(self, interval: float | None = None,
