@@ -225,7 +225,10 @@ The deployment:
   (`MEMORY_GUARD_INTERVAL`), and a query is stopped early when memory would
   cross the mark within the next second at its current rate of growth
   (`MEMORY_LOOKAHEAD`). Draining follows what the pod actually holds, including
-  memory a stopped query is still releasing. `MEMORY_GUARD=0` turns this off.
+  memory a stopped query is still releasing. Because DuckDB can take many
+  seconds to release a stopped query's memory, the guard also stops the next
+  newest query if the pod passes 95% of its limit (`MEMORY_HARD_FRACTION`) and
+  is still rising. `MEMORY_GUARD=0` turns this off.
 - Includes `/healthz` (liveness) and `/readyz` (readiness) probes for safe
   rollouts. `/readyz` also fails while the pod has no STAC catalog, so a pod
   that booted with `STAC_ALLOW_DEGRADED_START` leaves the Service until its
