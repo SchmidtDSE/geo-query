@@ -304,6 +304,57 @@ def test_memory_falls_back_to_the_largest_when_none_is_big(tmp_path):
     assert a.interrupted and not b.interrupted
 
 
+def test_drain_holds_while_stopped_memory_is_still_held(tmp_path):
+    """Freeing memory counts as gone for the interrupt, but the pod still holds
+    it, so the replica stays out of rotation until the reading itself drops."""
+    guard, box = _mem_guard(MemorySample(95 * _GiB, 100 * _GiB, 400 * _GiB))
+    old, new = _FakeConn(str(tmp_path / "duckdb-o")), _FakeConn(str(tmp_path / "duckdb-n"))
+    old.memory, new.memory = 30 * _GiB, 60 * _GiB
+    guard.register(old)
+    guard.register(new)
+    guard.check()
+    assert new.interrupted and guard.under_pressure()
+    guard.unregister(new.temp_dir)
+    guard.check()  # 95 - 60 freeing = 35 is under the clear mark; the pod still holds 95
+    assert guard.under_pressure()
+    box[0] = MemorySample(38 * _GiB, 100 * _GiB, 400 * _GiB)
+    guard.check()
+    assert not guard.under_pressure()
+
+
+def test_memory_looks_ahead_at_the_rate_of_growth(tmp_path):
+    now = [0.0]
+    guard, box = _mem_guard(MemorySample(80 * _GiB, 100 * _GiB, 400 * _GiB),
+                            memory_lookahead=1.0, clock=lambda: now[0])
+    conn = _FakeConn(str(tmp_path / "duckdb-x"))
+    conn.memory = 60 * _GiB
+    guard.register(conn)
+    guard.check()
+    box[0], now[0] = MemorySample(84 * _GiB, 100 * _GiB, 400 * _GiB), 1.0
+    guard.check()  # 4 GiB/s: 88 a second from now, under the 90 mark
+    assert not conn.interrupted
+    box[0], now[0] = MemorySample(86 * _GiB, 100 * _GiB, 400 * _GiB), 1.25
+    guard.check()  # 8 GiB/s: 94 a second from now
+    assert conn.interrupted
+
+
+def test_memory_is_checked_more_often_than_disk(tmp_path):
+    counts = {"disk": 0, "memory": 0}
+
+    class Counting(SpillGuard):
+        def _check_disk(self):
+            counts["disk"] += 1
+
+        def _check_memory(self):
+            counts["memory"] += 1
+
+    guard = Counting(limit=10 << 20, root=str(tmp_path), memory=True,
+                     memory_reader=lambda: MemorySample(1 * _GiB, 100 * _GiB, 400 * _GiB))
+    guard.start(interval=0.4, memory_interval=0.05)
+    time.sleep(1.0)
+    assert counts["disk"] >= 2 and counts["memory"] >= 3 * counts["disk"]
+
+
 def test_node_floor_interrupts_too(tmp_path):
     guard, _ = _mem_guard(MemorySample(40 * _GiB, 160 * _GiB, 5 * _GiB))
     conn = _FakeConn(str(tmp_path / "duckdb-x"))

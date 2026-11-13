@@ -221,7 +221,11 @@ The deployment:
   pod holds 8 GiB or more (`NODE_MEMORY_MIN_POD`), it drains when the node has
   less than 16 GiB available (`NODE_MEMORY_DRAIN_FLOOR`) and interrupts below
   8 GiB (`NODE_MEMORY_INTERRUPT_FLOOR`), because the pod's 2 Gi request does not
-  reserve what a heavy query uses. `MEMORY_GUARD=0` turns this off.
+  reserve what a heavy query uses. Memory is read every 0.25 s
+  (`MEMORY_GUARD_INTERVAL`), and a query is stopped early when memory would
+  cross the mark within the next second at its current rate of growth
+  (`MEMORY_LOOKAHEAD`). Draining follows what the pod actually holds, including
+  memory a stopped query is still releasing. `MEMORY_GUARD=0` turns this off.
 - Includes `/healthz` (liveness) and `/readyz` (readiness) probes for safe
   rollouts. `/readyz` also fails while the pod has no STAC catalog, so a pod
   that booted with `STAC_ALLOW_DEGRADED_START` leaves the Service until its
