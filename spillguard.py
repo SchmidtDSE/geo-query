@@ -187,7 +187,8 @@ class SpillGuard:
                  node_interrupt_floor: int | None = None,
                  node_min_pod: int | None = None,
                  memory_min_victim: int | None = None,
-                 spill_min_victim: int | None = None):
+                 spill_min_victim: int | None = None,
+                 memory_lookahead: float | None = None, clock=None):
         self.limit = limit
         self.root = root or spill_root()
         self.drain_at = (limit * (drain_fraction if drain_fraction is not None
@@ -196,6 +197,13 @@ class SpillGuard:
         self.interrupt_at = (limit * (interrupt_fraction if interrupt_fraction is not None
                                       else _fraction("SPILL_INTERRUPT_FRACTION", 0.8))
                              if limit else None)
+        # Seconds ahead the memory check projects pod memory at its current rate
+        # of growth: a query that will cross the mark before the next reading,
+        # or before an interrupt takes hold, is stopped now.
+        self.memory_lookahead = (memory_lookahead if memory_lookahead is not None
+                                 else _fraction("MEMORY_LOOKAHEAD", 1.0))
+        self._clock = clock or time.monotonic
+        self._last_pod_used: tuple[float, int] | None = None
         # Smallest spill worth stopping: anything less frees too little to matter.
         self.spill_min_victim = (spill_min_victim if spill_min_victim is not None
                                  else _env_bytes("SPILL_MIN_VICTIM", 1 << 30))
@@ -308,14 +316,14 @@ class SpillGuard:
             pass
         return out
 
-    def check(self) -> None:
-        """One watchdog pass over disk and memory."""
+    def check(self, disk: bool = True, memory: bool = True) -> None:
+        """One watchdog pass over disk and memory (or just one of them)."""
         if not self.enabled:
             return
         self._prune()
-        if self.disk_enabled:
+        if disk and self.disk_enabled:
             self._check_disk()
-        if self.memory_enabled:
+        if memory and self.memory_enabled:
             self._check_memory()
 
     @staticmethod
@@ -392,30 +400,48 @@ class SpillGuard:
         # count it as gone so the guard does not stop a second query meanwhile.
         with self._lock:
             freeing = sum(b for _, b in self._memory_freeing.values())
-        used = max(sample.pod_used - freeing, 0)
+        # Draining follows what the pod really holds: memory still being freed
+        # is memory the pod still holds, so it is no time to take more queries.
+        raw = sample.pod_used
         limit = sample.pod_limit
+        node_raw_counts = sample.node_available is not None and raw >= self.node_min_pod
+        pod_drain = bool(limit) and raw >= limit * self.memory_drain_fraction
+        node_drain = node_raw_counts and sample.node_available < self.node_drain_floor
+        if pod_drain or node_drain:
+            if self._memory_pressure is None:
+                print(f"⚠️ memory guard: pod {raw / 2**30:.1f} GiB"
+                      + (f" of {limit / 2**30:.1f} GiB" if limit else "")
+                      + (f", node {sample.node_available / 2**30:.1f} GiB available"
+                         if sample.node_available is not None else "")
+                      + "; draining this replica", file=sys.stderr)
+            self._memory_pressure = "pod" if pod_drain else "node"
+        elif self._memory_pressure is not None:
+            pod_clear = not limit or raw < limit * self.memory_drain_fraction * _CLEAR_RATIO
+            node_clear = (not node_raw_counts
+                          or sample.node_available >= self.node_drain_floor * _NODE_CLEAR_RATIO)
+            if pod_clear and node_clear:
+                print(f"✅ memory guard: pod {raw / 2**30:.1f} GiB; serving again",
+                      file=sys.stderr)
+                self._memory_pressure = None
+
+        # Interrupting counts memory still being freed as gone, so one stopped
+        # query does not get a second one stopped while it unwinds. It also
+        # looks ahead at the current rate of growth: two heavy queries grew
+        # ~8 GiB/s together on dev, past the mark by most of that between checks.
+        now = self._clock()
+        rate = 0.0
+        if self._last_pod_used is not None:
+            t0, used0 = self._last_pod_used
+            if now > t0:
+                rate = max((raw - used0) / (now - t0), 0.0)
+        self._last_pod_used = (now, raw)
+        used = max(raw - freeing, 0)
+        projected = used + rate * self.memory_lookahead
         available = (sample.node_available + freeing
                      if sample.node_available is not None else None)
         node_counts = available is not None and used >= self.node_min_pod
 
-        pod_drain = bool(limit) and used >= limit * self.memory_drain_fraction
-        node_drain = node_counts and available < self.node_drain_floor
-        if pod_drain or node_drain:
-            if self._memory_pressure is None:
-                print(f"⚠️ memory guard: pod {used / 2**30:.1f} GiB"
-                      + (f" of {limit / 2**30:.1f} GiB" if limit else "")
-                      + (f", node {available / 2**30:.1f} GiB available" if available is not None else "")
-                      + "; draining this replica", file=sys.stderr)
-            self._memory_pressure = "pod" if pod_drain else "node"
-        elif self._memory_pressure is not None:
-            pod_clear = not limit or used < limit * self.memory_drain_fraction * _CLEAR_RATIO
-            node_clear = not node_counts or available >= self.node_drain_floor * _NODE_CLEAR_RATIO
-            if pod_clear and node_clear:
-                print(f"✅ memory guard: pod {used / 2**30:.1f} GiB; serving again",
-                      file=sys.stderr)
-                self._memory_pressure = None
-
-        pod_critical = bool(limit) and used >= limit * self.memory_interrupt_fraction
+        pod_critical = bool(limit) and projected >= limit * self.memory_interrupt_fraction
         node_critical = node_counts and available < self.node_interrupt_floor
         if not (pod_critical or node_critical):
             return
@@ -432,12 +458,14 @@ class SpillGuard:
         if not candidates:
             return
         nbytes, victim, which = self._pick(candidates, self.memory_min_victim)
-        what = (f"memory guard: pod {used / 2**30:.1f} GiB of {limit / 2**30:.1f} GiB"
+        what = (f"memory guard: pod {raw / 2**30:.1f} GiB of {limit / 2**30:.1f} GiB"
+                + (f", rising {rate / 2**30:.1f} GiB/s" if rate else "")
                 if pod_critical else
                 f"memory guard: node has {available / 2**30:.1f} GiB available")
         self._interrupt(victim, "memory", nbytes, what, which)
 
-    def start(self, interval: float | None = None) -> threading.Thread | None:
+    def start(self, interval: float | None = None,
+              memory_interval: float | None = None) -> threading.Thread | None:
         if not self.enabled:
             print("ℹ️ guard off (no POD_EPHEMERAL_LIMIT or SPILL_GUARD_LIMIT, and MEMORY_GUARD=0)",
                   file=sys.stderr)
@@ -447,15 +475,26 @@ class SpillGuard:
             # the interrupt fired 4 GiB past its mark. Checking every second and
             # interrupting at 80% leaves ~8 GiB before the eviction limit (#428).
             interval = _fraction("SPILL_GUARD_INTERVAL", 1.0)
+        if memory_interval is None:
+            # Memory can grow far faster than spill (~8 GiB/s on dev with two
+            # heavy queries), and a reading is two small cgroup files, so memory
+            # is checked four times as often as disk.
+            memory_interval = _fraction("MEMORY_GUARD_INTERVAL", 0.25)
+        tick = min(interval, memory_interval) if self.memory_enabled else interval
 
         def loop():
+            next_disk = 0.0
             while True:
+                now = time.monotonic()
+                disk = now >= next_disk
+                if disk:
+                    next_disk = now + interval
                 try:
-                    self.check()
+                    self.check(disk=disk)
                 except Exception as e:  # the watchdog must not die
                     print(f"⚠️ guard check failed: {type(e).__name__}: {e}",
                           file=sys.stderr)
-                time.sleep(interval)
+                time.sleep(tick)
 
         thread = threading.Thread(target=loop, name="spill-guard", daemon=True)
         thread.start()
@@ -473,7 +512,8 @@ class SpillGuard:
                    f"{self.memory_interrupt_fraction:.0%}" if s.pod_limit else "no pod limit")
             print(f"🛡️ memory guard on: {pod}; node floors "
                   f"{self.node_drain_floor / 2**30:.0f}/{self.node_interrupt_floor / 2**30:.0f} GiB "
-                  f"while the pod holds {self.node_min_pod / 2**30:.0f} GiB+", file=sys.stderr)
+                  f"while the pod holds {self.node_min_pod / 2**30:.0f} GiB+; every "
+                  f"{memory_interval:g}s, looking {self.memory_lookahead:g}s ahead", file=sys.stderr)
         return thread
 
 
