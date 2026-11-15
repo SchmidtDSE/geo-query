@@ -18,6 +18,7 @@ import anyio
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 
+from tiles.pyramid import lock_is_stale, read_failed, read_lock
 from tiles.tile_math import (
     h3_edge_padding_deg,
     tile_xyz_to_lnglat_bounds,
@@ -104,6 +105,32 @@ def _get_cached_metadata(app_state, con, namespace: str, name: str):
             cache[key] = meta
         return meta
     return cache[key]
+
+
+# How long a client is told to wait before fetching metadata.json again while
+# the tileset's build is still running (#500).
+BUILDING_RETRY_AFTER_SECONDS = 5
+
+
+def _build_in_progress(con, namespace: str, name: str):
+    """Return the seconds a live build of this tileset has run, or None.
+
+    A build is live while its lock.json has a fresh heartbeat and no
+    failed.json was written after the lock's build started. Called only when
+    metadata.json is missing, so a finished tileset never pays for these reads.
+    """
+    output_uri = f"{_tileset_dir(namespace, name)}/"
+    cur = con.cursor()
+    lock = read_lock(cur, output_uri)
+    if lock is None or lock_is_stale(lock):
+        return None
+    started = lock.get("started_at")
+    if not isinstance(started, (int, float)):
+        return None
+    failed = read_failed(cur, output_uri)
+    if failed is not None and failed.get("failed_at", 0) >= started:
+        return None
+    return round(time.time() - started, 1)
 
 
 def _boundary_geom_sql(touches_dateline: bool) -> str:
@@ -300,7 +327,22 @@ async def serve_metadata(request: Request) -> Response:
         _get_cached_metadata, request.app.state, con, namespace, name
     )
     if meta is None:
-        return Response(status_code=404)
+        # A build still running answers 202 rather than 404, so a client
+        # that fetches early can tell "not ready yet" from "no such tileset"
+        # (#500). Tiles keep their 404: a map library would keep a 2xx tile.
+        elapsed = await anyio.to_thread.run_sync(
+            _build_in_progress, con, namespace, name
+        )
+        if elapsed is None:
+            return Response(status_code=404)
+        return JSONResponse(
+            {"status": "running", "elapsed_seconds": elapsed},
+            status_code=202,
+            headers={
+                "Cache-Control": "no-store",
+                "Retry-After": str(BUILDING_RETRY_AFTER_SECONDS),
+            },
+        )
     return JSONResponse(meta, headers={"Cache-Control": TILE_CACHE_CONTROL})
 
 
