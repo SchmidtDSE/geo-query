@@ -343,6 +343,62 @@ class TestServeMetadata:
         r = client.get("/tiles/hex/deadbeefdeadbeef/metadata.json")
         assert r.status_code == 404
 
+    # #500: a build still running answers 202, not the 404 of a missing tileset.
+    BUILDING = "0123456789abcdef"
+
+    def _lock(self, app, local_bucket, started_at=None, heartbeat_at=None):
+        from tiles.pyramid import write_lock
+        con = app.state.tile_con
+        write_lock(con, f"{local_bucket}/hex/{self.BUILDING}/", pod_id="test",
+                   started_at=started_at)
+        if heartbeat_at is not None:  # backdate the heartbeat to age the lock out
+            import json
+            path = local_bucket / "hex" / self.BUILDING / "lock.json"
+            lock = json.loads(path.read_text())
+            lock["heartbeat_at"] = heartbeat_at
+            path.write_text(json.dumps(lock))
+
+    def test_live_build_returns_202_running(self, app_with_tiles, local_bucket):
+        import time
+        self._lock(app_with_tiles, local_bucket, started_at=time.time() - 3)
+        r = TestClient(app_with_tiles).get(f"/tiles/hex/{self.BUILDING}/metadata.json")
+        assert r.status_code == 202
+        body = r.json()
+        assert body["status"] == "running"
+        assert body["elapsed_seconds"] >= 3
+        assert r.headers["cache-control"] == "no-store"
+        assert int(r.headers["retry-after"]) > 0
+
+    def test_live_build_tiles_still_404(self, app_with_tiles, local_bucket):
+        self._lock(app_with_tiles, local_bucket)
+        r = TestClient(app_with_tiles).get(f"/tiles/hex/{self.BUILDING}/5/5/12.pbf")
+        assert r.status_code == 404
+
+    def test_stale_lock_returns_404(self, app_with_tiles, local_bucket):
+        import time
+        old = time.time() - 3600
+        self._lock(app_with_tiles, local_bucket, started_at=old, heartbeat_at=old)
+        r = TestClient(app_with_tiles).get(f"/tiles/hex/{self.BUILDING}/metadata.json")
+        assert r.status_code == 404
+
+    def test_failed_build_returns_404_while_lock_is_fresh(self, app_with_tiles, local_bucket):
+        from tiles.pyramid import write_failed
+        self._lock(app_with_tiles, local_bucket)
+        write_failed(app_with_tiles.state.tile_con,
+                     f"{local_bucket}/hex/{self.BUILDING}/", error="boom")
+        r = TestClient(app_with_tiles).get(f"/tiles/hex/{self.BUILDING}/metadata.json")
+        assert r.status_code == 404
+
+    def test_rebuild_after_old_failure_returns_202(self, app_with_tiles, local_bucket):
+        import time
+        from tiles.pyramid import write_failed
+        write_failed(app_with_tiles.state.tile_con,
+                     f"{local_bucket}/hex/{self.BUILDING}/", error="earlier")
+        time.sleep(0.01)
+        self._lock(app_with_tiles, local_bucket)
+        r = TestClient(app_with_tiles).get(f"/tiles/hex/{self.BUILDING}/metadata.json")
+        assert r.status_code == 202
+
     def test_non_hex_namespace_returns_404(self, app_with_tiles, registered_ca):
         client = TestClient(app_with_tiles)
         r = client.get(f"/tiles/nothex/{registered_ca}/metadata.json")
