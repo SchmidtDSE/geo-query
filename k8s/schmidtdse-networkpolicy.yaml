@@ -39,6 +39,7 @@ spec:
           - cacao-demo
           - cacao-internal
           - coasts
+          - datacenters
           - padus
           - roadless-rule
           - tpl
