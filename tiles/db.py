@@ -6,6 +6,7 @@ and shared across requests via con.cursor() for per-request isolation.
 """
 import os
 import sys
+import threading
 
 import duckdb
 
@@ -163,3 +164,43 @@ def build_tile_writer_connection(threads: int | None = None) -> duckdb.DuckDBPyC
     con.sql(tile_write_secret_sql())
     lock_down(con, extra_dirs=(tile_bucket_base(),))
     return con
+
+
+_marker_con = None
+_marker_con_base = None
+_marker_con_lock = threading.Lock()
+
+
+def marker_connection() -> duckdb.DuckDBPyConnection:
+    """The shared connection for reading build markers: lock.json, failed.json
+    and metadata.json while a build may still be writing them.
+
+    The tile connection caches what it reads (the external file cache and the
+    HTTP metadata cache), which is right for the pyramid's parquet files, since
+    they never change, and wrong for markers another connection rewrites. On it,
+    a build's lock kept its first heartbeat, so a build past
+    _LOCK_STALE_SECONDS looked abandoned while it was still running: the
+    metadata endpoint answered 404 and get_hex_tile_status "unknown" on other
+    pods. This connection turns those caches off, so every read sees the
+    object as it is now. It never runs caller SQL. Use a cursor per call.
+    """
+    global _marker_con, _marker_con_base
+    with _marker_con_lock:
+        # Rebuilt if TILE_BUCKET_BASE changes (tests point it at a temp dir):
+        # the lock admits only the base it was built with.
+        if _marker_con is None or _marker_con_base != tile_bucket_base():
+            con = duckdb.connect(":memory:")
+            con.sql(disable_persistent_secrets_sql())
+            con.sql("LOAD httpfs")
+            con.sql("SET THREADS=1")
+            con.sql("SET enable_external_file_cache=false")
+            con.sql("SET enable_http_metadata_cache=false")
+            con.sql("SET enable_object_cache=false")
+            # The same read credentials as build_tile_connection(), which read
+            # these markers before.
+            con.sql(default_s3_secret_sql())
+            for stmt in source_secret_sql():
+                con.sql(stmt)
+            lock_down(con, extra_dirs=(tile_bucket_base(),))
+            _marker_con, _marker_con_base = con, tile_bucket_base()
+        return _marker_con

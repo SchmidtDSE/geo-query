@@ -687,7 +687,7 @@ import concurrent.futures
 import threading
 import time
 from tiles.endpoint import serve_metadata, serve_tile
-from tiles.db import build_tile_connection, build_tile_writer_connection, split_tile_writes
+from tiles.db import build_tile_connection, build_tile_writer_connection, marker_connection, split_tile_writes
 from tiles.pyramid import (
     MVT_LAYER_NAME,
     _public_base_url,
@@ -987,7 +987,10 @@ def register_hex_tiles(
         result["status"] = "done"
         return _apply_render_opts(result, color_scale, layer_style)
 
-    failed = read_failed(read_con, plan["output_uri"])
+    # Markers are read uncached: the tile connection would keep returning
+    # the first copy it read of a lock another pod keeps rewriting.
+    marker_con = marker_connection().cursor()
+    failed = read_failed(marker_con, plan["output_uri"])
     if failed is not None:
         return {
             "hash": plan["hash"],
@@ -996,7 +999,7 @@ def register_hex_tiles(
             "error": failed.get("error", ""),
         }
 
-    existing_lock = read_lock(read_con, plan["output_uri"])
+    existing_lock = read_lock(marker_con, plan["output_uri"])
     if existing_lock is not None and not lock_is_stale(existing_lock):
         # Another pod owns this build. Don't submit a duplicate.
         return {
@@ -1140,7 +1143,7 @@ def _status_check_once(hash: str, con=None):
     or another pod holds a fresh lock); the others are terminal for this poll.
     No sleeping here — the looping/waiting lives in the callers."""
     if con is None:
-        con = _get_tile_con().cursor()
+        con = marker_connection().cursor()
     paths = tile_paths_for_hash(hash)
     base = {"hash": hash, "tile_url_template": paths["tile_url_template"]}
 
@@ -1216,7 +1219,7 @@ def get_hex_tile_status(
     # Sync core, kept for direct unit testing. Loops over the one-shot check
     # with time.sleep; the served tool is the async wrapper below.
     wait_seconds = max(0, min(int(wait_seconds or 0), _STATUS_POLL_MAX_WAIT_SECONDS))
-    con = _get_tile_con().cursor()
+    con = marker_connection().cursor()  # markers change between polls; read uncached
     deadline = time.time() + wait_seconds
     while True:
         kind, payload = _status_check_once(hash, con)
@@ -1233,7 +1236,7 @@ async def _get_hex_tile_status_tool(
     # every other request for up to 60s per poll — #176), and each one-shot
     # S3 check is offloaded to a worker thread.
     wait_seconds = max(0, min(int(wait_seconds or 0), _STATUS_POLL_MAX_WAIT_SECONDS))
-    con = _get_tile_con().cursor()
+    con = marker_connection().cursor()  # markers change between polls; read uncached
     deadline = time.time() + wait_seconds
     while True:
         kind, payload = await anyio.to_thread.run_sync(_status_check_once, hash, con)

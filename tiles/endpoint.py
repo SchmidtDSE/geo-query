@@ -18,6 +18,7 @@ import anyio
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 
+from tiles.db import marker_connection
 from tiles.pyramid import lock_is_stale, read_failed, read_lock
 from tiles.tile_math import (
     h3_edge_padding_deg,
@@ -112,15 +113,17 @@ def _get_cached_metadata(app_state, con, namespace: str, name: str):
 BUILDING_RETRY_AFTER_SECONDS = 5
 
 
-def _build_in_progress(con, namespace: str, name: str):
+def _build_in_progress(namespace: str, name: str):
     """Return the seconds a live build of this tileset has run, or None.
 
     A build is live while its lock.json has a fresh heartbeat and no
     failed.json was written after the lock's build started. Called only when
     metadata.json is missing, so a finished tileset never pays for these reads.
+    Reads go through marker_connection(): the tile connection would keep
+    returning the lock's first heartbeat.
     """
     output_uri = f"{_tileset_dir(namespace, name)}/"
-    cur = con.cursor()
+    cur = marker_connection().cursor()
     lock = read_lock(cur, output_uri)
     if lock is None or lock_is_stale(lock):
         return None
@@ -331,7 +334,7 @@ async def serve_metadata(request: Request) -> Response:
         # that fetches early can tell "not ready yet" from "no such tileset"
         # (#500). Tiles keep their 404: a map library would keep a 2xx tile.
         elapsed = await anyio.to_thread.run_sync(
-            _build_in_progress, con, namespace, name
+            _build_in_progress, namespace, name
         )
         if elapsed is None:
             return Response(status_code=404)
