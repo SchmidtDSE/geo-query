@@ -1398,6 +1398,56 @@ class TestRegisterHexTilesAsync:
             assert lock["pod_id"] != "dead-pod"
 
 
+class TestMarkerReadsUncached:
+    """Build markers (lock.json, failed.json, metadata.json during a build) are
+    rewritten by other connections and pods. Read through the tile connection,
+    whose file caches are on, a lock kept its first heartbeat and a live build
+    looked abandoned after _LOCK_STALE_SECONDS (#500 follow-up). Local files
+    don't show that cache, so these tests pin the wiring instead."""
+
+    def test_marker_connection_has_file_caches_off(self, isolated_jobs):
+        from tiles.db import marker_connection
+        con = marker_connection()
+        for name in ("enable_external_file_cache", "enable_http_metadata_cache",
+                     "enable_object_cache"):
+            assert con.sql(f"SELECT current_setting('{name}')").fetchone()[0] is False, name
+
+    def _spy(self, monkeypatch, module):
+        from tiles.db import marker_connection
+        calls = []
+        def spy():
+            calls.append(1)
+            return marker_connection()
+        monkeypatch.setattr(module, "marker_connection", spy)
+        return calls
+
+    def test_status_reads_markers_uncached(self, isolated_jobs, monkeypatch):
+        import server
+        calls = self._spy(monkeypatch, server)
+        assert server.get_hex_tile_status(hash="0000000000000000")["status"] == "unknown"
+        assert calls
+
+    def test_status_reads_a_lock_from_another_pod(self, isolated_jobs, monkeypatch):
+        """A fresh lock another pod wrote reads as running, through the marker connection."""
+        import time, server
+        from tiles.pyramid import tile_paths_for_hash, write_lock
+        from tiles.db import build_tile_connection
+        h = "1111111111111111"
+        uri = tile_paths_for_hash(h)["output_uri"]
+        other_pod = build_tile_connection(threads=1)
+        old = time.time() - 3600
+        write_lock(other_pod, uri, pod_id="other", started_at=old)
+        assert server.get_hex_tile_status(hash=h)["status"] == "running"
+
+    def test_register_reads_markers_uncached(self, isolated_jobs, monkeypatch):
+        import server
+        monkeypatch.setattr(server, "_BUILD_INLINE_WAIT_SECONDS", 30.0)
+        calls = self._spy(monkeypatch, server)
+        server.register_hex_tiles(
+            sql="SELECT h3_latlng_to_cell(37.8, -122.3, 5) AS h5, 2.0 AS val", agg="AVG")
+        assert calls
+
+
 class TestGetHexTileStatus:
     def test_unknown_for_unrecognised_hash(self, isolated_jobs):
         import server

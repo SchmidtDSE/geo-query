@@ -358,8 +358,13 @@ class TestServeMetadata:
             lock["heartbeat_at"] = heartbeat_at
             path.write_text(json.dumps(lock))
 
-    def test_live_build_returns_202_running(self, app_with_tiles, local_bucket):
+    def test_live_build_returns_202_running(self, app_with_tiles, local_bucket, monkeypatch):
         import time
+        import tiles.endpoint as endpoint
+        from tiles.db import marker_connection
+        calls = []
+        monkeypatch.setattr(endpoint, "marker_connection",
+                            lambda: calls.append(1) or marker_connection())
         self._lock(app_with_tiles, local_bucket, started_at=time.time() - 3)
         r = TestClient(app_with_tiles).get(f"/tiles/hex/{self.BUILDING}/metadata.json")
         assert r.status_code == 202
@@ -368,6 +373,7 @@ class TestServeMetadata:
         assert body["elapsed_seconds"] >= 3
         assert r.headers["cache-control"] == "no-store"
         assert int(r.headers["retry-after"]) > 0
+        assert calls  # the lock is read uncached, not through the tile connection
 
     def test_live_build_tiles_still_404(self, app_with_tiles, local_bucket):
         self._lock(app_with_tiles, local_bucket)
