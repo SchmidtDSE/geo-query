@@ -13,9 +13,12 @@ metadata:
   namespace: schmidtdse
   annotations:
     haproxy-ingress.github.io/balance-algorithm: leastconn
-    # Per client IP.
-    haproxy-ingress.github.io/limit-rps: "10"
-    haproxy-ingress.github.io/limit-connections: "10"
+    # Per client IP. Generous on purpose: in-cluster callers such as the
+    # glen-benchmark Jobs all reach this route from NRP's shared egress
+    # addresses, so one IP can stand for many callers (#504). Every /mcp request
+    # still needs a valid key; the cap only stops a runaway client.
+    haproxy-ingress.github.io/limit-rps: "100"
+    haproxy-ingress.github.io/limit-connections: "100"
     haproxy-ingress.github.io/timeout-client: "600s"
     haproxy-ingress.github.io/timeout-server: "600s"
 spec:
