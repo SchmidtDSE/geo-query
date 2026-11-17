@@ -8,7 +8,7 @@ metadata:
   name: duckdb-mcp
   namespace: schmidtdse
 spec:
-  replicas: 2
+  replicas: 4
   selector:
     matchLabels:
       app: duckdb-mcp
