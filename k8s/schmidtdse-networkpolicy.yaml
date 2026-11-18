@@ -40,6 +40,7 @@ spec:
           - cacao-internal
           - coasts
           - datacenters
+          - naturetrace
           - padus
           - roadless-rule
           - tpl
