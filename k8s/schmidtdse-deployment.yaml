@@ -65,15 +65,9 @@ spec:
           value: "v0.9.10"
         - name: STAC_CATALOG_URL
           value: "https://s3-west.nrp-nautilus.io/public-data/stac/catalog.json"
-        # NRP Ceph through its external https endpoint, not the internal RGW
-        # (rook-ceph-rgw-nautiluss3.rook). The egress NetworkPolicy
-        # (schmidtdse-networkpolicy.yaml) allows only DNS and public https until
-        # NRP gives us a rule for internal RGW; then drop these two to return to
-        # the much faster internal endpoint.
-        - name: S3_DEFAULT_ENDPOINT
-          value: "s3-west.nrp-nautilus.io"
-        - name: S3_ENDPOINT_URL
-          value: "https://s3-west.nrp-nautilus.io"
+        # NRP Ceph is read through the internal RGW, the server's default
+        # (rook-ceph-rgw-nautiluss3.rook, plain http). The egress NetworkPolicy
+        # (schmidtdse-networkpolicy.yaml) allows port 80 for it.
         # No public host: the server has no Ingress. Hex tile URLs come back on
         # this internal base, and each app's nginx rewrites the prefix to its
         # own https host in /api/mcp responses (sub_filter) and proxies /tiles/

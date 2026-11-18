@@ -1,9 +1,14 @@
 # Network containment for duckdb-mcp in geo-workflows (#479).
 #
 # The server runs caller-supplied SQL, so it may reach only what it needs:
-# cluster DNS and https to public addresses. NRP Ceph is read through its
-# external endpoint (s3-west.nrp-nautilus.io; see S3_DEFAULT_ENDPOINT in
-# geo-workflows-deployment.yaml).
+# cluster DNS and http(s) to public addresses.
+# NRP Ceph is read through the internal RGW (rook-ceph-rgw-nautiluss3.rook,
+# plain http on port 80). Its pods use hostNetwork, so after the Service address
+# is translated the traffic goes to RGW node IPs, which are public addresses: a
+# rook namespace or pod-label rule can't match them. NRP's advice (2026-11-18)
+# is to allow TCP 80 alongside 443 in the public-address rule. That also allows
+# plain http to other public hosts, the same reach 443 already gives; private
+# and in-cluster ranges stay closed.
 #
 # Ingress: none. The data-workflows agent connects with kubectl port-forward,
 # which enters through the pod's own network namespace and is not subject to
@@ -36,8 +41,9 @@ spec:
       protocol: UDP
     - port: 53
       protocol: TCP
-  # https to public addresses only: NRP Ceph, source.coop on AWS, the STAC
-  # catalog and https:// reads in queries.
+  # http(s) to public addresses only: internal RGW (port 80, see above),
+  # NRP Ceph's external host, source.coop on AWS, the STAC catalog and
+  # https:// reads in queries.
   - to:
     - ipBlock:
         cidr: 0.0.0.0/0
@@ -56,4 +62,6 @@ spec:
         - ::1/128
     ports:
     - port: 443
+      protocol: TCP
+    - port: 80
       protocol: TCP

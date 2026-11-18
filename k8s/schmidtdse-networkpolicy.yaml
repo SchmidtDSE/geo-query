@@ -1,13 +1,16 @@
 # Network containment for duckdb-mcp in schmidtdse.
 #
 # The server runs caller-supplied SQL, so it may reach only what it needs:
-# cluster DNS and https to public addresses.
+# cluster DNS and http(s) to public addresses.
 #
-# Egress: DNS and https to public addresses only. NRP Ceph is read through its
-# external endpoint (s3-west.nrp-nautilus.io; see S3_DEFAULT_ENDPOINT in
-# schmidtdse-deployment.yaml), because our account can't read the rook Service
-# to write a rule for the internal RGW. When NRP gives us that rule, add it
-# here and drop the two endpoint env vars.
+# Egress: DNS and http(s) to public addresses only.
+# NRP Ceph is read through the internal RGW (rook-ceph-rgw-nautiluss3.rook,
+# plain http on port 80). Its pods use hostNetwork, so after the Service address
+# is translated the traffic goes to RGW node IPs, which are public addresses: a
+# rook namespace or pod-label rule can't match them. NRP's advice (2026-11-18)
+# is to allow TCP 80 alongside 443 in the public-address rule. That also allows
+# plain http to other public hosts, the same reach 443 already gives; private
+# and in-cluster ranges stay closed.
 #
 # Ingress, on 8000: the schmidtdse app pods that proxy /api/mcp, and the NRP
 # ingress controller for geo-query.nrp-nautilus.io (schmidtdse-ingress.yaml),
@@ -70,8 +73,9 @@ spec:
       protocol: UDP
     - port: 53
       protocol: TCP
-  # https to public addresses only: NRP Ceph, source.coop on AWS, the STAC
-  # catalog and https:// reads in queries.
+  # http(s) to public addresses only: internal RGW (port 80, see above),
+  # NRP Ceph's external host, source.coop on AWS, the STAC catalog and
+  # https:// reads in queries.
   - to:
     - ipBlock:
         cidr: 0.0.0.0/0
@@ -90,4 +94,6 @@ spec:
         - ::1/128
     ports:
     - port: 443
+      protocol: TCP
+    - port: 80
       protocol: TCP
