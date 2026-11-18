@@ -85,15 +85,17 @@ spec:
         # Same catalog, external address, advertised by browse_stac_catalog and
         # GET /version (#346).
         - name: STAC_PUBLIC_CATALOG_URL
-          value: "https://minio.carlboettiger.info/public-data/stac/catalog.json"
+          value: "https://s3.carlboettiger.info/public-data/stac/catalog.json"
         # Reroute nrp_ceph STAC metadata fetches to in-cluster MinIO.
         - name: S3_ENDPOINT_URL
           value: "http://minio-svc.minio.svc.cluster.local:9000"
-        # The mirror's STAC hrefs name its public host. Route both data reads
-        # (→ s3://, default secret) and STAC-JSON fetches to in-cluster MinIO:
-        # egress to the public host is blocked by cirrus-networkpolicy.yaml.
+        # The mirror's STAC hrefs name its public host: s3.carlboettiger.info since
+        # 2026-11-18, minio.carlboettiger.info before (still an alias). Route both
+        # data reads (→ s3://, default secret) and STAC-JSON fetches to the
+        # in-cluster Service: egress to the public host is blocked by
+        # cirrus-networkpolicy.yaml. An unmapped host fails every collection.
         - name: S3_SOURCES
-          value: '[{"name":"minio","https_prefix":"https://minio.carlboettiger.info/","s3_prefix":"s3://","metadata_url_prefix":"http://minio-svc.minio.svc.cluster.local:9000/"}]'
+          value: '[{"name":"minio","https_prefix":"https://minio.carlboettiger.info/","s3_prefix":"s3://","metadata_url_prefix":"http://minio-svc.minio.svc.cluster.local:9000/"},{"name":"mirror","https_prefix":"https://s3.carlboettiger.info/","s3_prefix":"s3://","metadata_url_prefix":"http://minio-svc.minio.svc.cluster.local:9000/"}]'
         # DuckDB default `s3` secret: bare host, http, path-style for MinIO.
         - name: S3_DEFAULT_ENDPOINT
           value: "minio-svc.minio.svc.cluster.local:9000"

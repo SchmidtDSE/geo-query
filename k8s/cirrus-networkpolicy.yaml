@@ -4,8 +4,9 @@
 # Egress is limited to the in-cluster MinIO / rustfs-s3 S3 API, cluster DNS, and AWS S3
 # us-west-2 on 443 (source.coop public data); nothing
 # else — not the internet, not other in-cluster services, not the public
-# minio.carlboettiger.info host. S3_SOURCES in cirrus-deployment.yaml routes the
-# mirror's public hrefs to minio-svc so reads still work.
+# s3.carlboettiger.info / minio.carlboettiger.info hosts. S3_SOURCES in
+# cirrus-deployment.yaml routes the mirror's public hrefs (both hosts) to
+# minio-svc so reads still work.
 #
 # Ingress is limited to Traefik (kube-system) on 8000. Kubelet probes come from
 # the node itself, which kube-router always admits.

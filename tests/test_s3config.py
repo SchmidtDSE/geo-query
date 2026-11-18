@@ -173,7 +173,7 @@ from s3config import allowed_client_endpoints, check_client_endpoint
 
 
 @_pytest.mark.parametrize("host", [
-    "s3-west.nrp-nautilus.io", "minio.carlboettiger.info", "rook-ceph-rgw-nautiluss3.rook",
+    "s3-west.nrp-nautilus.io", "s3.carlboettiger.info", "minio.carlboettiger.info", "rook-ceph-rgw-nautiluss3.rook",
     "s3.us-west-2.amazonaws.com", "s3.amazonaws.com", "S3-West.NRP-Nautilus.io",
 ])
 def test_known_endpoints_accepted(host):
