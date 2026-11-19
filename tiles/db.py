@@ -11,7 +11,7 @@ import threading
 import duckdb
 
 from s3config import default_endpoint, default_s3_secret_sql, infer_use_ssl, source_secret_sql, sql_quote
-from dbconfig import disable_persistent_secrets_sql, lock_down, memory_limit_sql, spill_sql
+from dbconfig import connect_config, disable_persistent_secrets_sql, lock_down, memory_limit_sql, spill_sql
 from spillguard import GUARD
 
 
@@ -59,9 +59,8 @@ def _base_tile_connection(threads: int | None) -> duckdb.DuckDBPyConnection:
     per-session. Dev environments must run the Dockerfile or manually INSTALL once.
 
     `threads` sets DuckDB's per-query parallelism for this connection:
-    - The shared READ connection (tile-serve GETs + prepare-phase probes) uses
-      the default (TILE_THREADS, 48). Harmless there — those queries are tiny
-      (LIMIT 0 / LIMIT 1 / single-tile reads).
+    - The shared READ connection (tile-serve GETs) and the per-call connection
+      for register_hex_tiles' prepare probes use the default (TILE_THREADS, 48).
     - Pyramid BUILD connections pass server._BUILD_THREADS (env TILE_BUILD_THREADS,
       default 48 — same as reads, leaving ~16 cores free under the 64-core limit).
       A build pegs every thread for minutes; the headroom keeps the uvicorn event
@@ -69,15 +68,15 @@ def _base_tile_connection(threads: int | None) -> duckdb.DuckDBPyConnection:
       under-provisioned nodes. Builds run on their own connection
       (server._build_executor) so this never slows tile reads.
     """
-    con = duckdb.connect(":memory:")
+    if threads is None:
+        threads = int(os.environ.get("TILE_THREADS", "48"))
+    # Threads and thread pinning are set at creation (#509).
+    con = duckdb.connect(":memory:", config=connect_config(threads))
     con.sql(disable_persistent_secrets_sql())
     con.sql("LOAD httpfs")
     con.sql("LOAD spatial")
     con.sql("LOAD h3")
 
-    if threads is None:
-        threads = int(os.environ.get("TILE_THREADS", "48"))
-    con.sql(f"SET THREADS={int(threads)}")
     con.sql("SET preserve_insertion_order=false")
     con.sql("SET enable_object_cache=true")
 
@@ -189,10 +188,9 @@ def marker_connection() -> duckdb.DuckDBPyConnection:
         # Rebuilt if TILE_BUCKET_BASE changes (tests point it at a temp dir):
         # the lock admits only the base it was built with.
         if _marker_con is None or _marker_con_base != tile_bucket_base():
-            con = duckdb.connect(":memory:")
+            con = duckdb.connect(":memory:", config=connect_config(1))
             con.sql(disable_persistent_secrets_sql())
             con.sql("LOAD httpfs")
-            con.sql("SET THREADS=1")
             con.sql("SET enable_external_file_cache=false")
             con.sql("SET enable_http_metadata_cache=false")
             con.sql("SET enable_object_cache=false")

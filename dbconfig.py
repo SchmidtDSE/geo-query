@@ -13,10 +13,11 @@ import uuid
 
 from s3config import sql_quote
 
-# Fraction of the pod's memory *limit* DuckDB may use before it spills to
-# temp_directory. The headroom absorbs allocations DuckDB doesn't count against
-# memory_limit (the Python process, httpfs buffers, uvicorn) so the cgroup never
-# OOM-kills the pod — an OOM takes out every co-tenant query on the replica, not
+# Fraction of the pod's memory *limit* all DuckDB connections together may use
+# before they spill to temp_directory; memory_slots() splits it per connection.
+# The headroom absorbs allocations DuckDB doesn't count against memory_limit
+# (the Python process, httpfs buffers, uvicorn) so the cgroup never OOM-kills
+# the pod — an OOM takes out every co-tenant query on the replica, not
 # just the offender, whereas spilling only makes the one oversized query slower
 # (#270).
 _MEMORY_LIMIT_FRACTION = 0.8
@@ -76,16 +77,40 @@ def _fraction_of_pod_limit(var: str, fraction: float, setting: str) -> str | Non
     return f"{budget_mib}MiB"
 
 
+def memory_slots() -> int:
+    """How many DuckDB instances may hold memory on this pod at once.
+
+    Each `duckdb.connect(":memory:")` is its own database instance with its own
+    memory_limit, so the limits add up. The pod's DuckDB budget is split across:
+    MCP_QUERY_CONCURRENCY query connections (default 8), TILE_BUILD_MAX_CONCURRENCY
+    pyramid builds (default 2) and the shared tile-serving connection (1).
+    DUCKDB_MEMORY_SLOTS overrides the count. Before #519 every connection got the
+    whole budget, so eight queries could claim about 1 TiB on a 160 GiB pod and
+    reached the OOM killer before they spilled.
+    """
+    explicit = os.environ.get("DUCKDB_MEMORY_SLOTS", "").strip()
+    try:
+        if explicit:
+            return max(int(explicit), 1)
+        queries = int(os.environ.get("MCP_QUERY_CONCURRENCY", "8") or 8)
+        builds = int(os.environ.get("TILE_BUILD_MAX_CONCURRENCY", "2") or 2)
+    except ValueError as e:
+        print(f"⚠️ memory slot count unparseable ({e}); using 11", file=sys.stderr)
+        return 11
+    return max(queries, 1) + max(builds, 0) + 1
+
+
 def duckdb_memory_limit() -> str | None:
-    """The DuckDB `memory_limit` value for this pod, or None to leave DuckDB's
-    own default in place.
+    """The DuckDB `memory_limit` for one connection on this pod, or None to
+    leave DuckDB's own default in place.
 
     Resolution order:
     - DUCKDB_MEMORY_LIMIT (explicit override) wins, passed through verbatim so an
-      operator can set '120GB', '160GiB', '-1' (unlimited), etc. (DuckDB units:
-      KB/MB/GB/TB or KiB/MiB/GiB/TiB, or -1; no '%' form.)
+      operator can set '12GB', '16GiB', '-1' (unlimited), etc. (DuckDB units:
+      KB/MB/GB/TB or KiB/MiB/GiB/TiB, or -1; no '%' form.) It is per connection.
     - else POD_MEMORY_LIMIT (wire the pod's cgroup limit in via the Downward API —
-      resourceFieldRef limits.memory): return ~80% of it.
+      resourceFieldRef limits.memory): ~80% of it, divided by memory_slots(), so
+      the limits of every connection that can be open at once sum to the budget.
     - else None. In a plain local run DuckDB sizes itself from detected RAM, which
       is only unsafe under a container cgroup — where detection can read the node's
       RAM, not the pod's, and DuckDB allocates past the limit and gets OOM-killed
@@ -94,7 +119,37 @@ def duckdb_memory_limit() -> str | None:
     explicit = os.environ.get("DUCKDB_MEMORY_LIMIT", "").strip()
     if explicit:
         return explicit
-    return _fraction_of_pod_limit("POD_MEMORY_LIMIT", _MEMORY_LIMIT_FRACTION, "memory_limit")
+    return _fraction_of_pod_limit("POD_MEMORY_LIMIT",
+                                  _MEMORY_LIMIT_FRACTION / memory_slots(), "memory_limit")
+
+
+def connect_config(threads: int | None = None) -> dict:
+    """Config for `duckdb.connect()`, set at creation because a later SET does
+    not reach worker threads that are already running (duckdb/duckdb#22189).
+
+    - pin_threads off: on hosts with more than 64 cores DuckDB 1.5 pins worker i
+      to CPU i, so every instance in every pod on the node stacks its workers on
+      the same low cores (#509).
+    - allocator_background_threads: return freed memory to the OS in the
+      background. Without it an idle connection kept memory it no longer used
+      (#519).
+    - threads, when given; otherwise DuckDB's default, which reads cgroup cpu.max.
+    """
+    cfg = {"pin_threads": "off", "allocator_background_threads": True}
+    if threads:
+        cfg["threads"] = int(threads)
+    return cfg
+
+
+def query_threads() -> int | None:
+    """Worker threads per query connection: QUERY_THREADS, or None for DuckDB's
+    default (the pod's CPU limit)."""
+    raw = os.environ.get("QUERY_THREADS", "").strip()
+    try:
+        return int(raw) if raw and int(raw) > 0 else None
+    except ValueError:
+        print(f"⚠️ QUERY_THREADS ignored ({raw!r}); using DuckDB's default", file=sys.stderr)
+        return None
 
 
 def duckdb_max_temp_directory_size() -> str | None:
@@ -113,7 +168,7 @@ def duckdb_max_temp_directory_size() -> str | None:
 
 
 def memory_limit_sql() -> str:
-    """`SET memory_limit=...` for this pod, or '' when unconfigured (caller skips).
+    """`SET memory_limit=...` for one connection, or '' when unconfigured (caller skips).
 
     Run on every DuckDB connection (query and tiles) so the spill-not-OOM
     protection is identical on both paths.

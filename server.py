@@ -1,4 +1,5 @@
 from auth import CALLER, caller_label, load_tokens, match_token
+from spillguard import read_memory as _read_memory, instance_memory as _instance_memory
 from spillguard import GUARD as SPILL_GUARD, BUSY_MESSAGE as SPILL_BUSY_MESSAGE, INTERRUPTED_MESSAGE as SPILL_INTERRUPTED_MESSAGE, INTERRUPTED_MESSAGES as SPILL_INTERRUPTED_MESSAGES
 import os
 import re
@@ -240,21 +241,26 @@ from s3config import (
     sql_quote as _sql_quote,
 )
 from dbconfig import (
+    connect_config,
     duckdb_max_temp_directory_size,
     duckdb_memory_limit,
     memory_limit_sql,
+    memory_slots,
+    query_threads,
     disable_persistent_secrets_sql,
     lock_down,
     locked_hint,
     spill_sql,
 )
 
-# Cap DuckDB's memory at ~80% of the pod's limit so an oversized query spills
-# instead of OOM-killing the pod (#270); no-op unless POD_MEMORY_LIMIT /
-# DUCKDB_MEMORY_LIMIT is set. Logged once at boot for ops visibility.
+# Cap DuckDB's memory so an oversized query spills instead of OOM-killing the
+# pod (#270): ~80% of the pod's limit, split across the connections that can be
+# open at once (#519). No-op unless POD_MEMORY_LIMIT / DUCKDB_MEMORY_LIMIT is set.
+# Logged once at boot for ops visibility.
 _MEMORY_LIMIT = duckdb_memory_limit()
 if _MEMORY_LIMIT:
-    print(f"DuckDB memory_limit = {_MEMORY_LIMIT} (spill before cgroup OOM)", file=sys.stderr)
+    print(f"DuckDB memory_limit = {_MEMORY_LIMIT} per connection, {memory_slots()} slots "
+          f"(spill before cgroup OOM)", file=sys.stderr)
 # Likewise cap each connection's spill below the ephemeral-storage limit, so an
 # oversized spill fails its own query instead of getting the pod evicted (#423).
 _TEMP_CAP = duckdb_max_temp_directory_size()
@@ -277,7 +283,9 @@ def get_isolated_db(s3_key: str = None, s3_secret: str = None, s3_endpoint: str 
             f"a private bucket, or neither (optionally with s3_endpoint) for an "
             f"anonymous source."
         )
-    conn = duckdb.connect(database=":memory:")
+    # Thread count and pinning are set at creation; a later SET misses running
+    # workers (#509).
+    conn = duckdb.connect(database=":memory:", config=connect_config(query_threads()))
     try:
         conn.sql(disable_persistent_secrets_sql())
         for stmt in (s.strip() for s in SETUP_SQL.split(";") if s.strip()):
@@ -653,11 +661,22 @@ async def _query_tool(
     sql_query = sql_query or sql
     if not sql_query:
         return "SQL Error: no query provided — pass the SQL as `sql_query` (the alias `sql` is also accepted)."
-    return await anyio.to_thread.run_sync(
-        query, sql_query, s3_key, s3_secret, s3_endpoint, s3_scope,
-        s3_region, s3_url_style,
-        limiter=_QUERY_LIMITER,
-    )
+    enqueued = time.monotonic()
+
+    def _timed_query() -> str:
+        started = time.monotonic()
+        result = query(sql_query, s3_key, s3_secret, s3_endpoint, s3_scope,
+                       s3_region, s3_url_style)
+        outcome = "error" if result.startswith("SQL Error") else "ok"
+        if result in (SPILL_BUSY_MESSAGE, *SPILL_INTERRUPTED_MESSAGES.values(), SPILL_INTERRUPTED_MESSAGE):
+            outcome = "guard"
+        # One line per query: server-side time and time spent waiting for a
+        # slot, which clients cannot see apart from network time (#519).
+        print(f"⏱️ Query done [{CALLER.get()}] {outcome} in {time.monotonic() - started:.1f}s "
+              f"(waited {started - enqueued:.1f}s for a slot)", file=sys.stderr)
+        return result
+
+    return await anyio.to_thread.run_sync(_timed_query, limiter=_QUERY_LIMITER)
 
 
 # Register the async wrapper under the tool name, reusing the sync function's
@@ -707,10 +726,10 @@ from tiles.pyramid import (
 )
 
 
-# Module-level persistent connection used for READS ONLY (tile-serve GETs +
-# the fast prepare-phase probes for register_hex_tiles). Pyramid builds get
-# their own connections via the executor below so a long-running COPY can't
-# block tile-serve reads.
+# Module-level persistent connection for tile-serve GETs only: small reads of
+# built tiles. It never runs caller SQL; register_hex_tiles' probes get a
+# connection per call (#519). Pyramid builds get their own connections via the
+# executor below so a long-running COPY can't block tile-serve reads.
 _tile_con = None
 
 
@@ -973,76 +992,81 @@ def register_hex_tiles(
 
     Always pass hive_partitioning = true so the planner can prune h0=* files.
     """
-    # Per-call cursor (not the bare shared connection): this function now runs
-    # inside a worker thread via the async tool wrapper, and several may be in
-    # flight at once. A cursor gives each its own thread-isolated handle on the
-    # shared :memory: connection (the tile endpoint uses the same pattern).
-    read_con = _get_tile_con().cursor()
-    plan = prepare_hex_tiles(
-        con=read_con, sql=sql, agg=agg,
-        finest_res=finest_res, min_res=min_res, zoom_offset=zoom_offset,
-    )
-    if plan["cached"] is not None:
-        result = cached_result_dict(plan, plan["cached"])
-        result["status"] = "done"
-        return _apply_render_opts(result, color_scale, layer_style)
-
-    # Markers are read uncached: the tile connection would keep returning
-    # the first copy it read of a lock another pod keeps rewriting.
-    marker_con = marker_connection().cursor()
-    failed = read_failed(marker_con, plan["output_uri"])
-    if failed is not None:
-        return {
-            "hash": plan["hash"],
-            "tile_url_template": plan["tile_url_template"],
-            "status": "failed",
-            "error": failed.get("error", ""),
-        }
-
-    existing_lock = read_lock(marker_con, plan["output_uri"])
-    if existing_lock is not None and not lock_is_stale(existing_lock):
-        # Another pod owns this build. Don't submit a duplicate.
-        return {
-            "hash": plan["hash"],
-            "tile_url_template": plan["tile_url_template"],
-            "status": "running",
-            "elapsed_seconds": round(time.time() - existing_lock["started_at"], 1),
-        }
-
+    # A fresh connection per call, closed on return (#519). The probes run the
+    # caller's SQL (the finest_res probe runs its whole aggregation). They used to
+    # run on the pod-lifetime tile connection, and a long-lived DuckDB instance
+    # keeps memory after a heavy query; an idle replica held 70 GiB and the
+    # memory guard kept it out of rotation for hours. A closed instance gives its
+    # memory back, and this one gets its own memory_limit and spill directory.
+    read_con = build_tile_connection()
     try:
-        if split_tile_writes():
-            # read_con runs caller SQL and holds no write key; a short-lived
-            # writer connection takes the lock.
-            lock_con = build_tile_writer_connection(threads=1)
-            try:
-                write_lock(lock_con, plan["output_uri"], pod_id=_POD_ID)
-            finally:
-                lock_con.close()
-        else:
-            write_lock(read_con, plan["output_uri"], pod_id=_POD_ID)
-    except Exception:
-        # S3 blip writing lock; proceed anyway. Worst case is a duplicate
-        # build elsewhere — see spec "Race we knowingly accept".
-        pass
+        plan = prepare_hex_tiles(
+            con=read_con, sql=sql, agg=agg,
+            finest_res=finest_res, min_res=min_res, zoom_offset=zoom_offset,
+        )
+        if plan["cached"] is not None:
+            result = cached_result_dict(plan, plan["cached"])
+            result["status"] = "done"
+            return _apply_render_opts(result, color_scale, layer_style)
 
-    future = _submit_build(plan)
-    try:
-        result = future.result(timeout=_BUILD_INLINE_WAIT_SECONDS)
-        result["status"] = "done"
-        return _apply_render_opts(result, color_scale, layer_style)
-    except concurrent.futures.TimeoutError:
-        return {
-            "hash": plan["hash"],
-            "tile_url_template": plan["tile_url_template"],
-            "status": "running",
-        }
-    except Exception as e:
-        return {
-            "hash": plan["hash"],
-            "tile_url_template": plan["tile_url_template"],
-            "status": "failed",
-            "error": str(e),
-        }
+        # Markers are read uncached: the tile connection would keep returning
+        # the first copy it read of a lock another pod keeps rewriting.
+        marker_con = marker_connection().cursor()
+        failed = read_failed(marker_con, plan["output_uri"])
+        if failed is not None:
+            return {
+                "hash": plan["hash"],
+                "tile_url_template": plan["tile_url_template"],
+                "status": "failed",
+                "error": failed.get("error", ""),
+            }
+
+        existing_lock = read_lock(marker_con, plan["output_uri"])
+        if existing_lock is not None and not lock_is_stale(existing_lock):
+            # Another pod owns this build. Don't submit a duplicate.
+            return {
+                "hash": plan["hash"],
+                "tile_url_template": plan["tile_url_template"],
+                "status": "running",
+                "elapsed_seconds": round(time.time() - existing_lock["started_at"], 1),
+            }
+
+        try:
+            if split_tile_writes():
+                # read_con runs caller SQL and holds no write key; a short-lived
+                # writer connection takes the lock.
+                lock_con = build_tile_writer_connection(threads=1)
+                try:
+                    write_lock(lock_con, plan["output_uri"], pod_id=_POD_ID)
+                finally:
+                    lock_con.close()
+            else:
+                write_lock(read_con, plan["output_uri"], pod_id=_POD_ID)
+        except Exception:
+            # S3 blip writing lock; proceed anyway. Worst case is a duplicate
+            # build elsewhere — see spec "Race we knowingly accept".
+            pass
+
+        future = _submit_build(plan)
+        try:
+            result = future.result(timeout=_BUILD_INLINE_WAIT_SECONDS)
+            result["status"] = "done"
+            return _apply_render_opts(result, color_scale, layer_style)
+        except concurrent.futures.TimeoutError:
+            return {
+                "hash": plan["hash"],
+                "tile_url_template": plan["tile_url_template"],
+                "status": "running",
+            }
+        except Exception as e:
+            return {
+                "hash": plan["hash"],
+                "tile_url_template": plan["tile_url_template"],
+                "status": "failed",
+                "error": str(e),
+            }
+    finally:
+        read_con.close()
 
 
 async def _register_hex_tiles_tool(
@@ -1304,6 +1328,36 @@ class _BearerAuthMiddleware(BaseHTTPMiddleware):
             CALLER.reset(reset)
 
 
+def _start_memory_log() -> None:
+    """Log the pod's memory every MEMORY_LOG_INTERVAL seconds (default 300; 0
+    turns it off): the working set the guard and the OOM killer count, the
+    node's available memory, queries running, and what the shared tile
+    connection holds. It shows whether memory falls back after a heavy query
+    or stays with an idle pod (#519)."""
+    try:
+        interval = float(os.environ.get("MEMORY_LOG_INTERVAL", "300"))
+    except ValueError:
+        interval = 300.0
+    if interval <= 0:
+        return
+
+    def loop():
+        while True:
+            time.sleep(interval)
+            try:
+                s = _read_memory()
+                tile = _instance_memory(_tile_con) if _tile_con is not None else None
+                gib = lambda b: "?" if b is None else f"{b / 2**30:.1f}"
+                print(f"📊 memory: pod {gib(s.pod_used)}/{gib(s.pod_limit)} GiB, node available "
+                      f"{gib(s.node_available)} GiB, queries running {_QUERY_LIMITER.borrowed_tokens}, "
+                      f"tile connection {gib(tile)} GiB, guard "
+                      f"{SPILL_GUARD.pressure_reason() or 'clear'}", file=sys.stderr)
+            except Exception as e:  # logging must not die
+                print(f"⚠️ memory log failed: {type(e).__name__}: {e}", file=sys.stderr)
+
+    threading.Thread(target=loop, name="memory-log", daemon=True).start()
+
+
 async def _healthz(_request):
     # Async, no executor work — fails fast if uvicorn's event loop is starved
     # (e.g. a runaway DuckDB query saturating CPU/memory on the pod). That's the
@@ -1446,6 +1500,7 @@ if __name__ == "__main__":
     # one refresh interval instead of the pod's lifetime (#337).
     _stac_start_periodic_refresh()
     SPILL_GUARD.start()
+    _start_memory_log()
     uvicorn.run(
         app,
         host="0.0.0.0",
