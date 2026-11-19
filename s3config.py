@@ -220,7 +220,8 @@ def route_hint(href: str) -> dict | None:
 # services. Exact host names only: no scheme, port or path.
 _CLIENT_ENDPOINTS = (
     "s3-west.nrp-nautilus.io",    # NRP Ceph, external; the default for caller keys
-    "minio.carlboettiger.info",   # lab MinIO: the mirror and private buckets (tpl-internal)
+    "s3.carlboettiger.info",      # lab mirror (RustFS since 2026-11-18) and private buckets
+    "minio.carlboettiger.info",   # alias of s3.carlboettiger.info, kept for old links
 )
 _AWS_S3_HOST = re.compile(r"s3(?:[.-][a-z0-9-]+)?\.amazonaws\.com")
 
