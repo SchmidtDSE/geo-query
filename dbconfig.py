@@ -13,10 +13,11 @@ import uuid
 
 from s3config import sql_quote
 
-# Fraction of the pod's memory *limit* DuckDB may use before it spills to
-# temp_directory. The headroom absorbs allocations DuckDB doesn't count against
-# memory_limit (the Python process, httpfs buffers, uvicorn) so the cgroup never
-# OOM-kills the pod — an OOM takes out every co-tenant query on the replica, not
+# Fraction of the pod's memory *limit* a DuckDB connection may use before it
+# spills to temp_directory. Each connection gets all of it (see
+# duckdb_memory_limit). The headroom absorbs allocations DuckDB doesn't count
+# against memory_limit (the Python process, httpfs buffers, uvicorn) so the
+# cgroup never OOM-kills the pod — an OOM takes out every co-tenant query on the replica, not
 # just the offender, whereas spilling only makes the one oversized query slower
 # (#270).
 _MEMORY_LIMIT_FRACTION = 0.8
@@ -77,15 +78,18 @@ def _fraction_of_pod_limit(var: str, fraction: float, setting: str) -> str | Non
 
 
 def duckdb_memory_limit() -> str | None:
-    """The DuckDB `memory_limit` value for this pod, or None to leave DuckDB's
-    own default in place.
+    """The DuckDB `memory_limit` for each connection on this pod, or None to
+    leave DuckDB's own default in place.
 
     Resolution order:
     - DUCKDB_MEMORY_LIMIT (explicit override) wins, passed through verbatim so an
       operator can set '120GB', '160GiB', '-1' (unlimited), etc. (DuckDB units:
-      KB/MB/GB/TB or KiB/MiB/GiB/TiB, or -1; no '%' form.)
+      KB/MB/GB/TB or KiB/MiB/GiB/TiB, or -1; no '%' form.) It is per connection.
     - else POD_MEMORY_LIMIT (wire the pod's cgroup limit in via the Downward API —
-      resourceFieldRef limits.memory): return ~80% of it.
+      resourceFieldRef limits.memory): ~80% of it, for every connection. One heavy
+      query may use the whole budget: heavy single queries come before parallel
+      work. Several heavy queries together can exceed it, and the memory guard
+      (spillguard, #428) drains and interrupts before the cgroup OOM.
     - else None. In a plain local run DuckDB sizes itself from detected RAM, which
       is only unsafe under a container cgroup — where detection can read the node's
       RAM, not the pod's, and DuckDB allocates past the limit and gets OOM-killed
@@ -95,6 +99,35 @@ def duckdb_memory_limit() -> str | None:
     if explicit:
         return explicit
     return _fraction_of_pod_limit("POD_MEMORY_LIMIT", _MEMORY_LIMIT_FRACTION, "memory_limit")
+
+
+def connect_config(threads: int | None = None) -> dict:
+    """Config for `duckdb.connect()`, set at creation because a later SET does
+    not reach worker threads that are already running (duckdb/duckdb#22189).
+
+    - pin_threads off: on hosts with more than 64 cores DuckDB 1.5 pins worker i
+      to CPU i, so every instance in every pod on the node stacks its workers on
+      the same low cores (#509).
+    - allocator_background_threads: return freed memory to the OS in the
+      background. Without it an idle connection kept memory it no longer used
+      (#519).
+    - threads, when given; otherwise DuckDB's default, which reads cgroup cpu.max.
+    """
+    cfg = {"pin_threads": "off", "allocator_background_threads": True}
+    if threads:
+        cfg["threads"] = int(threads)
+    return cfg
+
+
+def query_threads() -> int | None:
+    """Worker threads per query connection: QUERY_THREADS, or None for DuckDB's
+    default (the pod's CPU limit)."""
+    raw = os.environ.get("QUERY_THREADS", "").strip()
+    try:
+        return int(raw) if raw and int(raw) > 0 else None
+    except ValueError:
+        print(f"⚠️ QUERY_THREADS ignored ({raw!r}); using DuckDB's default", file=sys.stderr)
+        return None
 
 
 def duckdb_max_temp_directory_size() -> str | None:
@@ -113,7 +146,7 @@ def duckdb_max_temp_directory_size() -> str | None:
 
 
 def memory_limit_sql() -> str:
-    """`SET memory_limit=...` for this pod, or '' when unconfigured (caller skips).
+    """`SET memory_limit=...` for one connection, or '' when unconfigured (caller skips).
 
     Run on every DuckDB connection (query and tiles) so the spill-not-OOM
     protection is identical on both paths.

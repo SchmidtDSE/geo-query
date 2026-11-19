@@ -80,6 +80,22 @@ connection that runs caller SQL. Never print, log or commit a token. Never loose
 without a security review: in November 2026 a public DuckDB file read leaked the
 pod's Kubernetes service-account token.
 
+### Sizing: one heavy query first
+
+Size each replica for one user running one heavy query. Simultaneous use is
+rare outside glen-benchmark flights.
+
+- Every DuckDB connection gets the whole budget: `memory_limit` is 80% of the
+  pod and threads are DuckDB's default, the pod's CPU limit. Do not divide
+  memory or threads by query concurrency. That makes the common heavy query
+  spill or slow down to make room for parallel queries that seldom happen.
+  An even split was tried and dropped in #520.
+- When several heavy queries overlap, the memory guard (`spillguard.py`, #428)
+  drains the pod and interrupts queries before the cgroup OOM.
+- For benchmark load, add replicas for the flight and scale back after it.
+  Do not shrink per-query resources. A lower `MCP_QUERY_CONCURRENCY` per pod
+  is acceptable, because it costs a single query nothing.
+
 ### MCP transport: stateless HTTP
 
 The server runs FastMCP in **stateless streamable-HTTP mode** (`server.py`: `FastMCP(..., stateless_http=True)`). Every `POST /mcp` is a complete, independent request/response. There is no `Mcp-Session-Id` pinning clients to a replica, no per-pod session cache, no in-memory state that survives across requests. The protocol's stateful SSE mode is **not** in use here.

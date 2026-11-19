@@ -10,9 +10,11 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from dbconfig import (
     _parse_bytes,
+    connect_config,
     duckdb_max_temp_directory_size,
     duckdb_memory_limit,
     memory_limit_sql,
+    query_threads,
     spill_sql,
 )
 
@@ -21,7 +23,7 @@ from dbconfig import (
 def _clear_env(monkeypatch):
     """Each test starts with no memory/spill var set."""
     for var in ("DUCKDB_MEMORY_LIMIT", "POD_MEMORY_LIMIT", "DUCKDB_MAX_TEMP_DIRECTORY_SIZE",
-                "POD_EPHEMERAL_LIMIT", "DUCKDB_TEMP_ROOT"):
+                "POD_EPHEMERAL_LIMIT", "DUCKDB_TEMP_ROOT", "QUERY_THREADS"):
         monkeypatch.delenv(var, raising=False)
 
 
@@ -62,7 +64,8 @@ class TestDuckdbMemoryLimit:
         assert duckdb_memory_limit() == "100GB"
 
     def test_pod_limit_bytes_is_80_percent_in_mib(self, monkeypatch):
-        # 100 MiB → 80% = 80 MiB.
+        # 100 MiB → 80% = 80 MiB, for every connection: one heavy query may use
+        # the whole budget.
         monkeypatch.setenv("POD_MEMORY_LIMIT", str(100 * 2**20))
         assert duckdb_memory_limit() == "80MiB"
         assert memory_limit_sql() == "SET memory_limit='80MiB'"
@@ -73,6 +76,11 @@ class TestDuckdbMemoryLimit:
         expected_mib = int(96 * 2**30 * 0.8) // 2**20
         assert duckdb_memory_limit() == f"{expected_mib}MiB"
 
+    def test_explicit_override_is_per_connection(self, monkeypatch):
+        monkeypatch.setenv("POD_MEMORY_LIMIT", "160Gi")
+        monkeypatch.setenv("DUCKDB_MEMORY_LIMIT", "16GiB")
+        assert duckdb_memory_limit() == "16GiB"
+
     def test_unparseable_pod_limit_falls_back_to_none(self, monkeypatch, capsys):
         monkeypatch.setenv("POD_MEMORY_LIMIT", "not-a-size")
         assert duckdb_memory_limit() is None
@@ -81,6 +89,28 @@ class TestDuckdbMemoryLimit:
     def test_zero_pod_limit_returns_none(self, monkeypatch):
         monkeypatch.setenv("POD_MEMORY_LIMIT", "0")
         assert duckdb_memory_limit() is None
+
+
+class TestConnectConfig:
+    def test_pinning_off_and_background_release(self):
+        import duckdb
+        con = duckdb.connect(":memory:", config=connect_config(3))
+        settings = dict(con.sql(
+            "SELECT name, value FROM duckdb_settings() WHERE name IN "
+            "('pin_threads', 'allocator_background_threads', 'threads')").fetchall())
+        con.close()
+        assert settings == {"pin_threads": "off", "allocator_background_threads": "true",
+                            "threads": "3"}
+
+    def test_threads_omitted_by_default(self):
+        assert "threads" not in connect_config()
+
+    def test_query_threads_env(self, monkeypatch):
+        assert query_threads() is None
+        monkeypatch.setenv("QUERY_THREADS", "16")
+        assert query_threads() == 16
+        monkeypatch.setenv("QUERY_THREADS", "lots")
+        assert query_threads() is None
 
 
 class TestMaxTempDirectorySize:
