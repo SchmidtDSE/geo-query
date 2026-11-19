@@ -1,16 +1,18 @@
 # Egress limits for the DuckDB MCP servers in biodiversity.
 #
 # These servers run caller-supplied SQL, so they may reach only what they need:
-# cluster DNS and https to public addresses. In-cluster services, private
-# ranges and link-local addresses are not reachable.
+# cluster DNS and http(s) to public addresses, which include the internal RGW.
+# In-cluster services, private ranges and link-local addresses are not reachable.
 #
-# NRP Ceph is read through its external endpoint (s3-west.nrp-nautilus.io):
-# each selected Deployment sets S3_DEFAULT_ENDPOINT and S3_ENDPOINT_URL to it.
-# A rule for the faster internal RGW will be added here once NRP confirms how
-# to select it; the endpoint env vars are dropped then.
+# NRP Ceph is read through the internal RGW (rook-ceph-rgw-nautiluss3.rook,
+# plain http on port 80). Its pods use hostNetwork, so after the Service address
+# is translated the traffic goes to RGW node IPs, which are public addresses: a
+# rook namespace or pod-label rule can't match them. NRP's advice (2026-11-18)
+# is to allow TCP 80 alongside 443 in the public-address rule. That also allows
+# plain http to other public hosts, the same reach 443 already gives; private
+# and in-cluster ranges stay closed.
 #
-# Switch a server to the external endpoint before adding it to this selector,
-# or it loses Ceph. Egress only: these policies set no ingress rules.
+# Egress only: these policies set no ingress rules.
 #
 # Selected servers: duckdb-mcp and dev-duckdb-mcp, both in this repo. Other
 # deployments of this server keep their egress policy with their own manifests.
@@ -44,8 +46,9 @@ spec:
       protocol: UDP
     - port: 53
       protocol: TCP
-  # https to public addresses only: NRP Ceph, source.coop on AWS, the STAC
-  # catalog, minio.carlboettiger.info and https:// reads in queries.
+  # http(s) to public addresses only: internal RGW (port 80, see above),
+  # NRP Ceph's external host, source.coop on AWS, the STAC catalog,
+  # minio.carlboettiger.info and https:// reads in queries.
   - to:
     - ipBlock:
         cidr: 0.0.0.0/0
@@ -64,4 +67,6 @@ spec:
         - ::1/128
     ports:
     - port: 443
+      protocol: TCP
+    - port: 80
       protocol: TCP
