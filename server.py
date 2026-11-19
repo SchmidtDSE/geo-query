@@ -245,7 +245,6 @@ from dbconfig import (
     duckdb_max_temp_directory_size,
     duckdb_memory_limit,
     memory_limit_sql,
-    memory_slots,
     query_threads,
     disable_persistent_secrets_sql,
     lock_down,
@@ -253,14 +252,13 @@ from dbconfig import (
     spill_sql,
 )
 
-# Cap DuckDB's memory so an oversized query spills instead of OOM-killing the
-# pod (#270): ~80% of the pod's limit, split across the connections that can be
-# open at once (#519). No-op unless POD_MEMORY_LIMIT / DUCKDB_MEMORY_LIMIT is set.
-# Logged once at boot for ops visibility.
+# Cap DuckDB's memory at ~80% of the pod's limit so an oversized query spills
+# instead of OOM-killing the pod (#270); no-op unless POD_MEMORY_LIMIT /
+# DUCKDB_MEMORY_LIMIT is set. Logged once at boot for ops visibility.
 _MEMORY_LIMIT = duckdb_memory_limit()
 if _MEMORY_LIMIT:
-    print(f"DuckDB memory_limit = {_MEMORY_LIMIT} per connection, {memory_slots()} slots "
-          f"(spill before cgroup OOM)", file=sys.stderr)
+    print(f"DuckDB memory_limit = {_MEMORY_LIMIT} per connection (spill before cgroup OOM)",
+          file=sys.stderr)
 # Likewise cap each connection's spill below the ephemeral-storage limit, so an
 # oversized spill fails its own query instead of getting the pod evicted (#423).
 _TEMP_CAP = duckdb_max_temp_directory_size()

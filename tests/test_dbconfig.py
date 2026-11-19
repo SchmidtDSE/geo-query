@@ -14,7 +14,6 @@ from dbconfig import (
     duckdb_max_temp_directory_size,
     duckdb_memory_limit,
     memory_limit_sql,
-    memory_slots,
     query_threads,
     spill_sql,
 )
@@ -24,8 +23,7 @@ from dbconfig import (
 def _clear_env(monkeypatch):
     """Each test starts with no memory/spill var set."""
     for var in ("DUCKDB_MEMORY_LIMIT", "POD_MEMORY_LIMIT", "DUCKDB_MAX_TEMP_DIRECTORY_SIZE",
-                "POD_EPHEMERAL_LIMIT", "DUCKDB_TEMP_ROOT", "DUCKDB_MEMORY_SLOTS",
-                "MCP_QUERY_CONCURRENCY", "TILE_BUILD_MAX_CONCURRENCY", "QUERY_THREADS"):
+                "POD_EPHEMERAL_LIMIT", "DUCKDB_TEMP_ROOT", "QUERY_THREADS"):
         monkeypatch.delenv(var, raising=False)
 
 
@@ -65,21 +63,18 @@ class TestDuckdbMemoryLimit:
         monkeypatch.setenv("DUCKDB_MEMORY_LIMIT", "100GB")
         assert duckdb_memory_limit() == "100GB"
 
-    def test_pod_limit_bytes_is_80_percent_in_mib_with_one_slot(self, monkeypatch):
-        # 100 MiB → 80% = 80 MiB, all of it for the one connection.
-        monkeypatch.setenv("DUCKDB_MEMORY_SLOTS", "1")
+    def test_pod_limit_bytes_is_80_percent_in_mib(self, monkeypatch):
+        # 100 MiB → 80% = 80 MiB, for every connection: one heavy query may use
+        # the whole budget.
         monkeypatch.setenv("POD_MEMORY_LIMIT", str(100 * 2**20))
         assert duckdb_memory_limit() == "80MiB"
         assert memory_limit_sql() == "SET memory_limit='80MiB'"
 
-    def test_pod_limit_split_across_slots(self, monkeypatch):
-        # The production shape (#519): 160 GiB pod, 8 queries + 2 builds + the
-        # tile connection = 11 slots, so 11 connections at their limit stay
-        # within 80% of the pod rather than claiming ~1 TiB.
-        monkeypatch.setenv("POD_MEMORY_LIMIT", "160Gi")
-        expected_mib = int(160 * 2**30 * 0.8 / 11) // 2**20
+    def test_pod_limit_k8s_quantity(self, monkeypatch):
+        monkeypatch.setenv("POD_MEMORY_LIMIT", "96Gi")
+        # ~80% of 96 GiB, expressed in MiB.
+        expected_mib = int(96 * 2**30 * 0.8) // 2**20
         assert duckdb_memory_limit() == f"{expected_mib}MiB"
-        assert 11 * expected_mib * 2**20 <= 160 * 2**30 * 0.8
 
     def test_explicit_override_is_per_connection(self, monkeypatch):
         monkeypatch.setenv("POD_MEMORY_LIMIT", "160Gi")
@@ -94,25 +89,6 @@ class TestDuckdbMemoryLimit:
     def test_zero_pod_limit_returns_none(self, monkeypatch):
         monkeypatch.setenv("POD_MEMORY_LIMIT", "0")
         assert duckdb_memory_limit() is None
-
-
-class TestMemorySlots:
-    def test_default_is_queries_plus_builds_plus_tile_connection(self):
-        assert memory_slots() == 8 + 2 + 1
-
-    def test_follows_concurrency_env(self, monkeypatch):
-        monkeypatch.setenv("MCP_QUERY_CONCURRENCY", "4")
-        monkeypatch.setenv("TILE_BUILD_MAX_CONCURRENCY", "1")
-        assert memory_slots() == 6
-
-    def test_explicit_override(self, monkeypatch):
-        monkeypatch.setenv("DUCKDB_MEMORY_SLOTS", "3")
-        assert memory_slots() == 3
-
-    def test_unparseable_falls_back(self, monkeypatch, capsys):
-        monkeypatch.setenv("MCP_QUERY_CONCURRENCY", "eight")
-        assert memory_slots() == 11
-        assert "unparseable" in capsys.readouterr().err
 
 
 class TestConnectConfig:
