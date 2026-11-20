@@ -38,26 +38,6 @@ JOIN read_parquet('<STAC_CARBON_HEX_PATH>') c
   ON p.h8 = c.h8 AND p.h0 = c.h0
 ```
 
-**Note:** `rook-ceph-rgw-nautiluss3.rook` is an internal endpoint only accessible from k8s. Always use it — not the public endpoint — to run queries.
-
-You must read parquet datasets from S3 using read_parquet(). There are no local tables.
-
-**Aggregate after the join, never before.** When joining a small scope to a large hex dataset, do the join against the raw `read_parquet(...)` of the large side. Wrapping the large side in a pre-aggregation CTE (`GROUP BY`, `MODE`, `SUM`) before the join forces DuckDB to scan every h0 partition of it — the small scope's h0 values cannot prune through an aggregation operator.
-
-```sql
--- Join first, aggregate after → only scope's h0 partitions opened
-WITH lc_on_scope AS (
-  SELECT s.h8, s.h0, l.lc_class
-  FROM scope s
-  JOIN read_parquet('<large_hex>') l USING (h8, h0)
-  WHERE l.lc_class IS NOT NULL
-)
-SELECT h8, h0, MODE(lc_class) AS dominant
-FROM lc_on_scope GROUP BY h8, h0;
-```
-
-The `WHERE l.lc_class IS NOT NULL` here keeps a no-data cell from poisoning the aggregate — but it also **changes which cells the answer describes**. When that column is only partly populated, see §9 before reporting the result as a share of the whole.
-
 ### Scoping by name or feature id (no region mask)
 <!-- prov: issue=#163 models=unrecorded added=2026-06-07 cell=bosl-pri-eez-area tier=core -->
 

@@ -15,7 +15,7 @@ All datasets are already stored as H3 hex parquet in the STAC catalog — no con
 
 **Raster datasets** (land cover, elevation, biomass) were built by assigning each pixel to its H3 cell — one row per pixel, with no aggregation during processing. These datasets have no `_cng_fid`. When the raster resolution is finer than the H3 resolution, many pixels share the same hex cell, producing multiple rows per hex with different values.
 
-All spatial operations are hex joins — two datasets overlap wherever their hex IDs match. **Never use `ST_Within`, `ST_Intersects`, `ST_Centroid`, or any spatial function.** For coordinates (e.g. to supply a map zoom), use `h3_cell_to_lat(hN)` and `h3_cell_to_lng(hN)`.
+All spatial operations are hex joins — two datasets overlap wherever their hex IDs match.
 
 ## Resolution Direction
 <!-- prov: issue=#45 models=unrecorded added=2026-04-06 cell=background tier=core -->
@@ -31,7 +31,7 @@ All spatial operations are hex joins — two datasets overlap wherever their hex
 
 - Always report **areas** (km², acres, etc.), never raw hex counts
 - For nationwide/global aggregates over millions of cells, `APPROX_COUNT_DISTINCT(hN)` is fast and accurate to ~1–2%. For per-group breakdowns (per-state, per-class, per-county, per-district) where each group has fewer than ~1M distinct cells, use `COUNT(DISTINCT hN)` instead — DuckDB's HLL error grows steeply at smaller cardinalities and compounds inside `GROUP BY` (real-world per-group errors of +30% have been observed). Total scan size matters less than per-group cell count.
-- **Never SUM area columns** (ACRES, GIS_Acres, area_ha, etc.) on hex data. These store the source polygon's total area repeated on every hex row. `SUM(ACRES)` = polygon_area × num_hex_cells — wrong by 10³–10⁶×. Always compute area from hex cells instead. Note: `DISTINCT` deduplication removes duplicate rows for the same feature but does not resolve overlapping features — two features covering the same ground still sum their acreages independently. Counting distinct hex cells × `area_per_cell` is the only method immune to this, since it counts physical cells rather than feature declarations (see the previous bullet for `APPROX` vs exact `COUNT DISTINCT`). The same row-replication problem applies to `length_*` columns on line hex at smaller scale — see Problem 4.
+- **Never SUM a feature's area or length column over hex rows** (ACRES, GIS_Acres, area_ha, `length_*`): the source feature's total repeats on every cell it covers, so `SUM(ACRES)` is wrong by 10³–10⁶×. For a feature's own total, sum the column over `DISTINCT _cng_fid` (optimization rule 8). For the area covered by overlapping features, count distinct cells × cell area, which counts each piece of ground once.
 
 ## Area Conversion
 <!-- prov: issue=#163,#259,#288 models=gemma,qwen3,qwen3-small added=2026-07-07 cell=units-acres,cell-count-units,carbon-cell-is-total tier=core -->
