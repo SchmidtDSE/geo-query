@@ -130,6 +130,18 @@ def query_threads() -> int | None:
         return None
 
 
+def query_time_limit() -> float | None:
+    """Seconds a `query` may run before it is interrupted (#523): QUERY_TIME_LIMIT,
+    default 900 (above the 10-minute client timeout). 0 turns the limit off."""
+    raw = os.environ.get("QUERY_TIME_LIMIT", "").strip()
+    try:
+        value = float(raw) if raw else 900.0
+    except ValueError:
+        print(f"⚠️ QUERY_TIME_LIMIT ignored ({raw!r}); using 900 s", file=sys.stderr)
+        value = 900.0
+    return value if value > 0 else None
+
+
 def duckdb_max_temp_directory_size() -> str | None:
     """The DuckDB `max_temp_directory_size` for this pod, or None to leave
     DuckDB's default (90% of the disk under temp_directory).

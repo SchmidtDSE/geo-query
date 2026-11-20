@@ -4,6 +4,8 @@ from spillguard import GUARD as SPILL_GUARD, BUSY_MESSAGE as SPILL_BUSY_MESSAGE,
 import os
 import re
 import socket
+import threading
+import time
 import duckdb
 import uvicorn
 import sys
@@ -240,12 +242,14 @@ from s3config import (
     source_secret_sql,
     sql_quote as _sql_quote,
 )
+from querytime import QueryClock, TIME_LIMIT_MESSAGE
 from dbconfig import (
     connect_config,
     duckdb_max_temp_directory_size,
     duckdb_memory_limit,
     memory_limit_sql,
     query_threads,
+    query_time_limit,
     disable_persistent_secrets_sql,
     lock_down,
     locked_hint,
@@ -513,9 +517,13 @@ def query(sql_query: str, s3_key: str = None, s3_secret: str = None, s3_endpoint
     if SPILL_GUARD.under_pressure():
         return SPILL_BUSY_MESSAGE
     spill_dir = None
+    clock = None
     try:
         with get_isolated_db(s3_key=s3_key, s3_secret=s3_secret, s3_endpoint=s3_endpoint, s3_scope=s3_scope, s3_region=s3_region, s3_url_style=s3_url_style) as db:
             spill_dir = db.sql("SELECT current_setting('temp_directory')").fetchone()[0]
+            limit = query_time_limit()
+            if limit:
+                clock = QueryClock(db, sql_query, limit, caller=CALLER.get())
             result = db.sql(sql_query)
             if result is None: return "Command executed successfully."
 
@@ -613,11 +621,16 @@ def query(sql_query: str, s3_key: str = None, s3_secret: str = None, s3_endpoint
             reason = SPILL_GUARD.was_interrupted(spill_dir)
             if reason:
                 return SPILL_INTERRUPTED_MESSAGES.get(reason, SPILL_INTERRUPTED_MESSAGE)
+            if clock is not None and clock.expired.is_set():
+                return TIME_LIMIT_MESSAGE.format(limit=clock.limit)
         # An S3 error can repeat the request's key ID (InvalidAccessKeyId,
         # SignatureDoesNotMatch), and this text goes back to the model.
         msg = redact_credentials(str(e), (s3_key, s3_secret))
         hint = locked_hint(msg)
         return f"SQL Error: {msg}" + (f"\n\n{hint}" if hint else "")
+    finally:
+        if clock is not None:
+            clock.stop()
 
 query.__doc__ = f"""
 Executes optimized DuckDB SQL against S3 parquet files.
@@ -666,6 +679,8 @@ async def _query_tool(
         result = query(sql_query, s3_key, s3_secret, s3_endpoint, s3_scope,
                        s3_region, s3_url_style)
         outcome = "error" if result.startswith("SQL Error") else "ok"
+        if result.startswith(TIME_LIMIT_MESSAGE[:40]):
+            outcome = "time-limit"
         if result in (SPILL_BUSY_MESSAGE, *SPILL_INTERRUPTED_MESSAGES.values(), SPILL_INTERRUPTED_MESSAGE):
             outcome = "guard"
         # One line per query: server-side time and time spent waiting for a
