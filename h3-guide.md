@@ -56,7 +56,7 @@ GROUP BY state;
 
 When the scope is a name or feature id on a global `h0=*` dataset, restrict `h0` first — see *Scoping by name or feature id* in query-optimization.md.
 
-`h3_cell_area()` takes a resolution column (`h3_cell_area(h6, 'km^2')`) and exactly one of three units: `'km^2'`, `'m^2'`, `'rads^2'`. It has no acre unit; any other unit string returns `NaN`, not an error. For acres, compute in `km^2` and multiply by 247.105 (or `m^2` by 0.000247105):
+`h3_cell_area()` takes a resolution column (`h3_cell_area(h6, 'km^2')`) and exactly one of three units: `'km^2'`, `'m^2'`, `'rads^2'`. It has no acre unit, and any other unit string, including `'km²'`, is an error. For acres, compute in `km^2` and multiply by 247.105 (or `m^2` by 0.000247105):
 
 ```sql
 SELECT SUM(h3_cell_area(h8, 'km^2')) * 247.105 AS area_acres
