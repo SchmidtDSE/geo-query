@@ -1511,6 +1511,22 @@ class TestFlatHexColumnDedup:
         # The hex's per-feature dedup note still reaches the prompt
         assert "dedup by `id`" in md
 
+    def test_flat_asset_beside_hex_says_what_it_is_for(self):
+        """#522: models chose the flat file for overlays when nothing said its role."""
+        from stac import FLAT_ASSET_ROLE
+        col = self._make_flat_plus_hex()
+        md = _format_collection(col, sub_children=[])
+        assert md.count(FLAT_ASSET_ROLE) == 1
+        flat_line = md.index("data.parquet')")
+        assert flat_line < md.index(FLAT_ASSET_ROLE) < md.index("hex/**')")
+
+    def test_flat_asset_without_hex_gets_no_role_line(self):
+        from stac import FLAT_ASSET_ROLE
+        col = self._make_flat_plus_hex()
+        col.assets = {"data": col.assets["data"]}
+        md = _format_collection(col, sub_children=[])
+        assert FLAT_ASSET_ROLE not in md
+
     def test_h3_partition_key_description_present_once(self):
         col = self._make_flat_plus_hex()
         md = _format_collection(col, sub_children=[])
@@ -1581,7 +1597,10 @@ class TestColumnsFromCollectionDictionary:
 
     def test_asset_without_list_takes_the_collection_dictionary(self):
         md = _format_collection(self._make(), sub_children=[])
-        assert "  - GeoParquet: `read_parquet('s3://public-tpl/wcb/wcb.parquet')`\n    - columns: `ProjectID` (string), `Acres` (double), `Status` (string)" in md
+        from stac import FLAT_ASSET_ROLE
+        assert ("  - GeoParquet: `read_parquet('s3://public-tpl/wcb/wcb.parquet')`\n"
+                f"    - {FLAT_ASSET_ROLE}\n"
+                "    - columns: `ProjectID` (string), `Acres` (double), `Status` (string)") in md
         assert "`Acres` (double) — Project acres" in md
 
     def test_names_only_list_gets_descriptions_and_values_from_the_collection(self):
