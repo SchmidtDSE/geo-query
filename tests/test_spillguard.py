@@ -532,3 +532,43 @@ def test_no_trim_while_a_query_runs_and_at_most_every_30s():
     t[0] += 25
     guard.check()
     assert trims == [1000.0, 1035.0]
+def test_logs_how_long_a_stopped_query_took_to_end(tmp_path, capsys):
+    guard, _ = _mem_guard(MemorySample(95 * _GiB, 100 * _GiB, 400 * _GiB))
+    conn = _FakeConn(str(tmp_path / "duckdb-q"))
+    conn.memory = 20 * _GiB
+    guard.register(conn)
+    guard.check()
+    assert conn.interrupted
+    guard.unregister(conn.temp_dir)
+    err = capsys.readouterr().err
+    assert "query stopped for memory ended" in err and "after its interrupt" in err
+    assert not guard._stopping
+
+
+def test_warns_when_a_stopped_query_keeps_running(tmp_path, capsys):
+    guard, _ = _mem_guard(MemorySample(95 * _GiB, 100 * _GiB, 400 * _GiB))
+    guard.stop_late_after = 0.05
+    stuck = _FakeConn(str(tmp_path / "duckdb-s"))
+    stuck.memory = 20 * _GiB
+    guard.register(stuck)
+    guard.check()
+    assert stuck.interrupted
+    time.sleep(0.2)
+    err = capsys.readouterr().err
+    assert "still running 0.05s after its memory guard interrupt" in err
+    assert os.path.normpath(stuck.temp_dir) in err
+    guard.unregister(stuck.temp_dir)
+    time.sleep(0.1)
+    assert "still running" not in capsys.readouterr().err
+
+
+def test_no_late_warning_once_the_stopped_query_ends(tmp_path, capsys):
+    guard, _ = _mem_guard(MemorySample(95 * _GiB, 100 * _GiB, 400 * _GiB))
+    guard.stop_late_after = 0.1
+    conn = _FakeConn(str(tmp_path / "duckdb-q"))
+    conn.memory = 20 * _GiB
+    guard.register(conn)
+    guard.check()
+    guard.unregister(conn.temp_dir)
+    time.sleep(0.25)
+    assert "still running" not in capsys.readouterr().err
