@@ -183,6 +183,10 @@ def instance_memory(conn) -> int | None:
     duckdb_memory() during a query. It is closed at once: an open cursor would
     keep the instance, its memory and its spill files alive after the query's own
     connection closes.
+
+    EXTERNAL_FILE_CACHE is left out: on a remote Parquet read it reserves the
+    whole file (4.3 GiB for wdpa.parquet) as the query starts, while the process
+    holds a fraction of that, and it made the guard stop the wrong query (#530).
     """
     try:
         cur = conn.cursor()
@@ -190,7 +194,7 @@ def instance_memory(conn) -> int | None:
         return None  # closed
     try:
         return int(cur.sql("SELECT coalesce(sum(memory_usage_bytes), 0) "
-                           "FROM duckdb_memory()").fetchone()[0])
+                           "FROM duckdb_memory() WHERE tag <> 'EXTERNAL_FILE_CACHE'").fetchone()[0])
     except Exception:
         return None
     finally:

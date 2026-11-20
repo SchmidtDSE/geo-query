@@ -421,6 +421,23 @@ def test_instance_memory_reads_a_running_query_and_skips_a_closed_one():
     assert instance_memory(con) is None
 
 
+def test_instance_memory_leaves_out_the_external_file_cache(tmp_path):
+    """The file cache reserves a whole remote file as a query starts, far more
+    than the query holds, so it does not count toward the query's figure (#530)."""
+    duckdb = pytest.importorskip("duckdb")
+    path = str(tmp_path / "f.parquet")
+    con = duckdb.connect(":memory:")
+    con.sql(f"COPY (SELECT range i, md5(range::VARCHAR) s FROM range(3000000)) TO '{path}'")
+    con.sql(f"SELECT count(*) FROM read_parquet('{path}') WHERE s LIKE 'a%'").fetchone()
+    cached = con.sql("SELECT coalesce(sum(memory_usage_bytes), 0) FROM duckdb_memory() "
+                     "WHERE tag = 'EXTERNAL_FILE_CACHE'").fetchone()[0]
+    if cached < 100_000:
+        pytest.skip("this DuckDB does not cache local Parquet reads")
+    # The idle connection holds little besides the cache.
+    assert instance_memory(con) < cached
+    con.close()
+
+
 def test_real_memory_interrupt_stops_the_newer_query(tmp_path):
     """Two real DuckDB queries hold memory at once; with the pod reported over
     its mark, the guard stops the one that started later and the older one runs
