@@ -1,0 +1,13 @@
+# In-cluster only: the benchmark server has no Ingress (bench-deployment.yaml).
+apiVersion: v1
+kind: Service
+metadata:
+  name: bench-mcp-server-duckdb
+  namespace: biodiversity
+spec:
+  selector:
+    app: bench-duckdb-mcp
+  ports:
+    - protocol: TCP
+      port: 8000
+      targetPort: 8000

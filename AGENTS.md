@@ -69,6 +69,7 @@ The MCP server runs on the NRP Nautilus Kubernetes cluster, namespace `biodivers
 
 - **Prod:** `https://duckdb-mcp.nrp-nautilus.io` — `k8s/deployment.yaml`
 - **Dev:** `https://dev-duckdb-mcp.nrp-nautilus.io` — `k8s/dev-deployment.yaml`; must stay ≥2 replicas so cross-pod bugs surface here before prod
+- **Bench:** in-cluster only (`bench-mcp-server-duckdb:8000`, no Ingress) — `k8s/bench-deployment.yaml`; glen-benchmark flights only, one query per pod, scaled up for a flight and to 0 after it
 
 Replicas, resources, env (e.g. `STAC_CATALOG_URL`) and ingress timeouts live in `k8s/`;
 read them there, or from the live cluster, rather than restating them here.

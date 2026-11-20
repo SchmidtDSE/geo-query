@@ -1,0 +1,135 @@
+# Benchmark-only MCP server (#530). glen-benchmark flights use it; live users
+# never reach it.
+#
+# - Separate from live use: no Ingress, only the in-cluster Service in
+#   bench-service.yaml. glen-benchmark's Jobs run in biodiversity, and NRP drops
+#   pod traffic between namespaces, which is why this lives here.
+# - One query at a time per pod (MCP_QUERY_CONCURRENCY=1), so heavy benchmark
+#   queries never share a pod's memory (#530). Scale replicas for the flight
+#   instead: ~12 for 8 agent sessions.
+# - Off between flights: replicas stays 0 in this file. A flight runs
+#     kubectl -n biodiversity set image deployment/bench-duckdb-mcp \
+#       server=ghcr.io/schmidtdse/geo-query:<tag>@sha256:<digest of the build under test>
+#     kubectl -n biodiversity set env deployment/bench-duckdb-mcp APP_VERSION=<tag>
+#     kubectl -n biodiversity scale deployment/bench-duckdb-mcp --replicas=12
+#   and scales back to 0 when it ends. Like dev, the image here is a floor, not
+#   a record of what the last flight ran; each transcript records /version.
+# - Auth: its own token Secret, bench-mcp-tokens, holding one key
+#   (glen-benchmark) with the same value as the Jobs' glen-benchmark-mcp
+#   Secret. Create it once, without printing the token:
+#     kubectl -n biodiversity get secret glen-benchmark-mcp \
+#       -o jsonpath='{.data.MCP_AUTH_TOKEN}' | base64 -d \
+#       | kubectl -n biodiversity create secret generic bench-mcp-tokens \
+#           --from-file=glen-benchmark=/dev/stdin
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: bench-duckdb-mcp
+  namespace: biodiversity
+spec:
+  replicas: 0
+  selector:
+    matchLabels:
+      app: bench-duckdb-mcp
+  template:
+    metadata:
+      labels:
+        app: bench-duckdb-mcp
+    spec:
+      # The server never calls the Kubernetes API; a mounted token was readable
+      # through DuckDB in the 2026-11-06 incident.
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      volumes:
+      - name: mcp-tokens
+        secret:
+          secretName: bench-mcp-tokens
+          defaultMode: 0440
+      # Spill space: the root filesystem is read-only.
+      - name: tmp
+        emptyDir:
+          sizeLimit: 50Gi
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: topology.kubernetes.io/region
+                    operator: In
+                    values: ["us-west"]
+      containers:
+      - name: server
+        # A floor: each flight sets the build under test (see the header).
+        image: ghcr.io/schmidtdse/geo-query:v0.9.10@sha256:d6c3637f4d7f1c3c63b46f587fb10150e730df16f07f5653ae758f3a94cc48db
+        imagePullPolicy: IfNotPresent
+        env:
+        - name: APP_VERSION
+          value: "v0.9.10"
+        - name: STAC_CATALOG_URL
+          value: "https://s3-west.nrp-nautilus.io/public-data/stac/catalog.json"
+        # Same tool surface as the public schmidtdse server the apps use.
+        - name: STAC_DISCOVERY
+          value: "0"
+        # One query at a time per pod (#530); more replicas carry the load.
+        - name: MCP_QUERY_CONCURRENCY
+          value: "1"
+        - name: MCP_PUBLIC_BASE_URL
+          value: "http://bench-mcp-server-duckdb.biodiversity.svc.cluster.local:8000"
+        - name: MCP_AUTH_TOKENS_DIR
+          value: /etc/mcp-tokens
+        # Pod's cgroup memory limit → DuckDB memory_limit (~80%) (#270).
+        - name: POD_MEMORY_LIMIT
+          valueFrom:
+            resourceFieldRef:
+              containerName: server
+              resource: limits.memory
+        # Ephemeral-storage limit → DuckDB max_temp_directory_size (#423).
+        - name: POD_EPHEMERAL_LIMIT
+          valueFrom:
+            resourceFieldRef:
+              containerName: server
+              resource: limits.ephemeral-storage
+        volumeMounts:
+        - name: mcp-tokens
+          mountPath: /etc/mcp-tokens
+          readOnly: true
+        - name: tmp
+          mountPath: /tmp
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop: ["ALL"]
+        resources:
+          # Same sizing as prod and dev: small requests per NRP's usage policy
+          # (AGENTS.md → Sizing), high limits for one heavy query.
+          requests:
+            memory: 2Gi
+            cpu: 250m
+          limits:
+            memory: 160Gi
+            cpu: 64
+        ports:
+        - containerPort: 8000
+        readinessProbe:
+          httpGet:
+            path: /readyz
+            port: 8000
+          initialDelaySeconds: 15
+          periodSeconds: 5
+          timeoutSeconds: 2
+          failureThreshold: 1
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: 8000
+          initialDelaySeconds: 30
+          periodSeconds: 30
+          timeoutSeconds: 10
+          failureThreshold: 6
