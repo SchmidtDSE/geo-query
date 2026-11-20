@@ -2050,9 +2050,9 @@ class TestDeploymentCatalogScope:
 class TestDiscoveryFlag:
     """#420 proposal 2: whole-catalog discovery is a per-deployment switch."""
 
-    def test_defaults_on(self, monkeypatch):
+    def test_defaults_off(self, monkeypatch):
         monkeypatch.delenv("STAC_DISCOVERY", raising=False)
-        assert stac.discovery_enabled() is True
+        assert stac.discovery_enabled() is False
 
     def test_opt_out_values(self, monkeypatch):
         for val in ("0", "false", "FALSE", "no", "off", " off "):

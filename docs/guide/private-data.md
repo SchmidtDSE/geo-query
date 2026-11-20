@@ -30,9 +30,9 @@ inline as `collection` (or `catalog` for `browse_stac_catalog`). That remains th
 contract; see [catalog sourcing](https://github.com/SchmidtDSE/geo-query/blob/main/docs/architecture/catalog-sourcing.md).
 :::
 
-Running a private app and want the model to see *only* the collections you configure? Set
-`STAC_DISCOVERY=0` and `browse_stac_catalog` / `catalog://list` are not registered at all —
-they never appear in `tools/list`, so the model is not told about a tool it cannot call.
+The model sees *only* the collections your app configures: whole-catalog discovery
+(`browse_stac_catalog` / `catalog://list`) is off by default (`STAC_DISCOVERY` unset or `0`),
+so those never appear in `tools/list` and the model is not told about a tool it cannot call.
 Per-dataset lookup (`get_stac_details`, `get_collection`, `catalog://{id}`) is unaffected.
 
 ::: tip Serving a private catalog

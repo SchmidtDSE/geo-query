@@ -54,7 +54,7 @@ Concretely, since #420:
 - A private catalog is reached by pointing `STAC_CATALOG_URL` at it and putting
   its token in `STAC_CATALOG_TOKEN`, exactly as a private bucket is reached by a
   scoped secret in the replica's env.
-- Whole-catalog **discovery** is opt-out per deployment (`STAC_DISCOVERY=0`).
+- Whole-catalog **discovery** is off by default and opt-in per deployment (`STAC_DISCOVERY=1`).
   Default on, because the shared public server's configured catalog *is* the
   public catalog and at least one third-party app is pinned too old to stop
   advertising a tool that vanished; every private app runs its own replica and

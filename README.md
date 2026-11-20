@@ -262,7 +262,7 @@ If every pod's imageID matches the pinned digest, prod is current and consistent
 
 ### Tools
 
-- `browse_stac_catalog(catalog?)` - List available datasets from the deployment's STAC catalog (registered only when discovery is enabled; see `STAC_DISCOVERY`)
+- `browse_stac_catalog(catalog?)` - List available datasets from the deployment's STAC catalog (registered only when a deployment sets `STAC_DISCOVERY=1`; off by default)
 - `get_stac_details(dataset_id, collection?)` - Get S3 paths and schema for a dataset
 - `query(sql_query, s3_endpoint?, s3_scope?, s3_region?, s3_url_style?)` - Execute DuckDB SQL against S3 parquet files. It also accepts `s3_key` and `s3_secret` from a server-side proxy, but does not offer them to the model (see Private S3 data).
 
