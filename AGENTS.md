@@ -18,7 +18,7 @@ loop that keeps breaking it (#341/#366).
 **To test a change before it merges**, do not repoint dev. Options:
 - **Merge-then-validate:** merge to `main` → dev rolls onto that digest → run
   glen-benchmark against dev (see *Validating guidance changes*). This is the
-  gate, and it is unavailable while NRP keeps dev closed.
+  gate.
 - **Preview env (planned, #366):** a `preview` label builds `:pr-<n>` for an
   ephemeral `dev-pr-<n>` — the build trigger and CI deploy land with the NRP
   deploy token.
@@ -454,13 +454,13 @@ MCP_URL=<endpoint serving the candidate guidance> \
 - **Grow on fix:** add the question that exposed a new trap to the suite with a
   `trap:` tag, in glen-benchmark.
 
-**No gate is available while NRP keeps dev closed.** `dev-duckdb-mcp` has no
-Ingress, and an NRP policy on the MCP servers closes it to every pod,
-including the benchmark's Jobs. A run against the mirror
+**Only dev counts as the gate.** A run against the mirror
 (`duckdb-mcp.carlboettiger.info`) or prod measures the released guidance, not a
 candidate, so it does not count as validation of a guidance change. Neither does
 the runner's `SYSTEM_PROMPT_APPEND_FILE`, which adds to the app's prompt rather
-than replacing what the server serves. Hold guidance changes, or ask Carl.
+than replacing what the server serves. If dev is unreachable (it had no Ingress
+from the November 2026 incident until 2026-11-20), hold guidance changes or ask
+Carl.
 
 ---
 
