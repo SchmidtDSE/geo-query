@@ -1,10 +1,8 @@
 # H3 Geospatial Indexing
-<!-- prov: issue=#49 models=unrecorded added=2026-05-28 cell=background tier=core -->
-
-**Most datasets have H3 hex versions.** Always use them for spatial operations instead of GeoParquet geometry columns.
+<!-- prov: issue=#49,#522 models=minimax-m2,deepseek-v4-flash,mimo-v2.6-flash,glm-5.3-flash added=2026-11-20 cell=bosl-coral-notake-share,orig-ecoregions-17pct tier=core -->
 
 **Always use H3 hex datasets for filtering and joining — never spatial predicates on GeoParquet.**
-When a dataset appears in the STAC catalog as GeoParquet, a hex-indexed version almost always exists alongside it. Find and use the hex version. Never use `ST_Within`, `ST_Intersects`, `ST_Contains`, or similar predicates to filter or join large datasets — on global data these run 10+ minutes and return nothing useful. (Narrow exception: line datasets where exact mileage at AOI boundaries is required — see Problem 4.)
+When `get_stac_details` lists a GeoParquet file and a `/hex/` asset, the GeoParquet is for feature attributes (names, ids, measured columns); every spatial step (overlap, containment, coverage share, area, distance) uses the `/hex/` asset. Never use `ST_Within`, `ST_Intersects`, `ST_Contains`, or similar predicates to filter or join large datasets — on these global files they run for hours, cannot be stopped, and a fast test on a few rows does not predict the full query. (Only exception: clipping line mileage to an AOI boundary — see Problem 4. It never applies to polygons, areas or distances.)
 
 If you browse the catalog and only find a GeoParquet with no hex equivalent, **say so** rather than falling back to spatial predicates. A missing hex version is a data pipeline gap (not something to work around silently).
 
@@ -101,7 +99,7 @@ WHERE <feature filter>;
 ```
 
 ## Distance Between Hexes
-<!-- prov: issue=#168,#228 models=glm-5,kimi added=2026-06-21 cell=bosl-nearest-fishing-jarvis tier=core -->
+<!-- prov: issue=#168,#228,#522 models=glm-5,kimi,minimax-m2,deepseek-v4-flash added=2026-11-20 cell=bosl-nearest-fishing-jarvis,orig-vents-near-ebsa tier=core -->
 
 `h3_great_circle_distance` measures between two coordinate pairs, not cell
 indices. To get the distance between two hex cells, convert each to its center
@@ -116,6 +114,33 @@ FROM ...
 ```
 
 Units: `'km'`, `'m'`, or `'rads'`.
+
+**Within a distance ("near", "within N km of").** Expand each feature's cells with
+`h3_grid_disk`, keep the cells whose centers are within the distance, then join on
+the cell like any overlap. Neighbouring centers are `sqrt(3)` edge lengths apart,
+which sets the ring count:
+
+```sql
+WITH pts AS (
+  SELECT DISTINCT _cng_fid AS fid, h8 FROM read_parquet('<point hex>')
+),
+ring AS (
+  SELECT fid, h8 AS src, UNNEST(h3_grid_disk(h8,
+           CAST(ceil(<km> / (sqrt(3) * h3_get_hexagon_edge_length_avg(8, 'km'))) AS INTEGER))) AS h8
+  FROM pts
+),
+near AS (
+  SELECT fid, h8, h3_cell_to_parent(h8, 0) AS h0 FROM ring
+  WHERE h3_great_circle_distance(h3_cell_to_lat(src), h3_cell_to_lng(src),
+                                 h3_cell_to_lat(h8), h3_cell_to_lng(h8), 'km') <= <km>
+)
+SELECT COUNT(DISTINCT n.fid) AS features_near
+FROM near n
+SEMI JOIN read_parquet('<area hex>') a ON a.h8 = n.h8 AND a.h0 = n.h0;
+```
+
+For distances over ~50 km, run the same query on a coarser column (`h6`) if the
+dataset has one; the ring count grows with distance divided by edge length.
 
 ## Joining Different Resolutions
 <!-- prov: issue=#45,#312,#350 models=claude-sonnet-5,glm-5.2,kimi-k3,qwen added=2026-08-03 cell=h8-h9-join,h3-rollup-mean-not-max-res8,h3-rollup-mean-not-max-res9 tier=core -->
@@ -427,20 +452,8 @@ GROUP BY rg.<aoi_name> ORDER BY miles DESC;
 **`ST_Length` returns degrees, not metres,** because these GeoParquets store lon/lat — so
 dividing by `1609.344` is off by ~5 orders of magnitude. The ratio above sidesteps units
 entirely: both lengths carry the same wrong unit, it cancels, and `length_miles` supplies the
-real scale. Same idea as the fractional-overlay recipe below, and it needs no CRS choice.
-
-**If you need a true length in metres, flip the axes first.** `ST_Length_Spheroid`,
-`ST_Distance_Spheroid` and `ST_Transform` all read the first ordinate as **latitude**, the
-opposite of how these files store it; passing lon/lat gives `nan` or `POINT (inf inf)` rather
-than an error. `ST_FlipCoordinates` is the fix:
-
-```sql
-SELECT ROUND(SUM(ST_Length_Spheroid(ST_FlipCoordinates(<line_geom>))) / 1609.344, 1) AS miles
-FROM read_parquet('<line_geoparquet>');
-```
-
-Both routes agree — on federal trails clipped to a county, 1,177.4 mi geodesic against
-1,177.9 mi by the ratio (0.04%).
+real scale. Same idea as the fractional-overlay recipe below, and it needs no CRS choice. Geometry
+functions here are for clipping lines to an AOI only; polygon areas and overlays stay on hex.
 
 **Read each geometry column name off the schema** (`DESCRIBE`, or the STAC `table:columns`) —
 it is `geom` on the census layers, `geometry` on trails and seafloor-geomorphology, and

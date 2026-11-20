@@ -120,12 +120,13 @@ WHERE sci_name = 'Rana draytonii'
 ```
 
 ## 5. GeoParquet geometry columns
-<!-- prov: issue=#48 models=unrecorded added=2026-05-03 cell=none tier=core -->
+<!-- prov: issue=#48,#522 models=unrecorded added=2026-11-20 cell=none tier=core -->
 
-GeoParquet files contain a geometry column (usually `geom`) typed as `GEOMETRY('OGC:CRS84')`.
-This type cannot be displayed in tabular output — the server drops it automatically.
-Avoid `SELECT *` on GeoParquet files; select only the columns you need. If you need
-coordinates, cast explicitly: `ST_AsText(geom) AS geom_wkt`.
+A GeoParquet file has one row per feature and a geometry column (`geom`, `geometry`
+or `SHAPE`) that the server drops from output. Read feature attributes from it (names,
+ids, measured area or length); do spatial work on the hex asset. Select only the
+columns you need, not `SELECT *`. For coordinates use `h3_cell_to_lat` /
+`h3_cell_to_lng` on the hex (H3 guide).
 
 ## 6. Apostrophes in string literals
 <!-- prov: issue=unrecorded models=unrecorded added=2026-06-24 cell=tpl-tates-hell-acres tier=core -->
@@ -162,10 +163,10 @@ total far smaller than expected is the signature of this trap.
 A vector feature's area or length is the value in its **own** column (`acres`,
 `length_km`), summed over `DISTINCT` feature id — tiling replicates that value on
 every cell the feature touches, so dedup by `_cng_fid` before summing.
-`COUNT(DISTINCT hN) * h3_cell_area(...)` is a larger, different number: it counts
-every partially-covered boundary cell as if the feature filled it. Use the hex
-only to *locate* the feature (mask, join, overlay); take the magnitude from the
-measured column. For the conserved or overlaid **share** of that total, weight by
+`COUNT(DISTINCT hN) * h3_cell_area(...)` also counts boundary cells the feature
+only partly fills, so when the feature has a measured column, take the magnitude
+from it and use the hex to *locate* the feature (mask, join, overlay). With no
+measured column, the hex area is the answer. For the conserved or overlaid **share** of that total, weight by
 the coverage fraction — area for polygons and rasters, length for lines — and keep
 the weight inside the same `SUM()` as the measure, not derived in a subquery the
 outer aggregate then ignores. (See the overlay rules in the H3 guide.)
