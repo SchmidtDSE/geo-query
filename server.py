@@ -178,9 +178,8 @@ EXTRAS_RAW = load_text_file("experimental-extensions.md") if EXTRA_EXTENSIONS el
 # -------------------------------------------------------------------------
 # The discovery step is named only where the tool exists. A deployment with
 # STAC_DISCOVERY=0 (#420) does not register `browse_stac_catalog`, and guidance
-# that still told the model to call it would burn a turn on `Unknown tool`. With
-# discovery on — every deployment today — both strings below are byte-identical
-# to what shipped before, so the assembled description does not move.
+# that still told the model to call it would burn a turn on `Unknown tool`.
+# Discovery is off by default, so most deployments get the second form.
 _DISCOVER_STEP = (
     "Call `browse_stac_catalog` then `get_stac_details`"
     if _stac_discovery_enabled()

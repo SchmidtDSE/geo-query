@@ -1908,11 +1908,17 @@ class TestDiscoveryIsOptOutPerDeployment:
         from mcp.server.fastmcp import FastMCP
         return FastMCP("discovery-test")
 
-    def test_registered_by_default(self, monkeypatch):
-        """Default on: the shared public server keeps the tool for clients pinned
-        too old to notice it disappearing (utah-public-lands sits at v3.24.0)."""
+    def test_absent_by_default(self, monkeypatch):
+        """Default off: discovery belongs to tools outside this server."""
         import server
         monkeypatch.delenv("STAC_DISCOVERY", raising=False)
+        fresh = self._fresh_server()
+        assert server._register_stac_discovery(fresh) is False
+        assert "browse_stac_catalog" not in {t.name for t in fresh._tool_manager.list_tools()}
+
+    def test_registered_when_deployment_opts_in(self, monkeypatch):
+        import server
+        monkeypatch.setenv("STAC_DISCOVERY", "1")
         fresh = self._fresh_server()
         assert server._register_stac_discovery(fresh) is True
         assert "browse_stac_catalog" in {t.name for t in fresh._tool_manager.list_tools()}

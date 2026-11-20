@@ -44,11 +44,13 @@ def discovery_enabled() -> bool:
     configured catalog. That is right for the shared public server — where the
     configured catalog *is* the public catalog — and wrong for a curated app
     deployment, which wants the model to see only the collections the app
-    configures. Default on (back-compat for clients pinned too old to notice a
-    tool disappearing); a deployment opts out with `STAC_DISCOVERY=0`.
+    configures. Default off: discovery belongs to tools outside this server
+    (a harness can read the public STAC catalog itself), and the listing is
+    larger than clients' tool-result caps (#490). A deployment opts in with
+    `STAC_DISCOVERY=1`.
     """
-    return os.environ.get("STAC_DISCOVERY", "1").strip().lower() not in (
-        "0", "false", "no", "off",
+    return os.environ.get("STAC_DISCOVERY", "0").strip().lower() in (
+        "1", "true", "yes", "on",
     )
 
 
