@@ -379,6 +379,16 @@ Count the move the rule exists to prevent instead. For §3 that is
 `DESCRIBE` statements with the section present *or* absent — a direct answer where the
 aggregate had none.
 
+### Ablation: `GUIDANCE_DROP`
+
+To test whether a section still earns its place, run the benchmark server with
+`GUIDANCE_DROP` naming it: heading prefixes separated by `;`, for example
+`Problem 3 — Raster pixels;Area Conversion`. The server leaves those sections (and
+their children) out of the `query` description, refuses to start if an entry matches
+no heading, and lists what it dropped in `/version` under `guidance_dropped`. Set it
+only on `bench-duckdb-mcp`, never on prod or dev. Compare the section's questions
+with and without it on the shipping models, on the same image.
+
 ### The guidance gate (CI)
 
 `tests/check_guidance_prov.py` runs on any guidance change (`.github/workflows/guidance-gate.yml`)
