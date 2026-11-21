@@ -127,24 +127,35 @@ def _section_tier(lines, i):
         return t.group(1).lower() if t else None
     return None
 
-def select_tiers(text, include_extra):
-    """Drop `tier=extra` sections unless `include_extra`. Prov lines are stripped either way."""
-    if include_extra:
-        return strip_prov(text)
+def _heading_text(line):
+    return line.lstrip("#").strip()
+
+
+def select_tiers(text, include_extra, drop=(), dropped=None):
+    """Drop `tier=extra` sections unless `include_extra`, and any section whose
+    heading starts with an entry of `drop` (case-insensitive; see GUIDANCE_DROP).
+    Headings dropped for `drop` are appended to `dropped` when given. Prov lines
+    are stripped either way."""
+    drop = [d.lower() for d in drop if d]
     lines = text.splitlines(keepends=True)
     keep, i = [], 0
     while i < len(lines):
         m = _HEADING_RE.match(lines[i])
-        if m and _section_tier(lines, i) == "extra":
-            level = len(m.group(1))
-            j = i + 1
-            while j < len(lines):
-                m2 = _HEADING_RE.match(lines[j])
-                if m2 and len(m2.group(1)) <= level:
-                    break
-                j += 1
-            i = j
-            continue
+        if m:
+            heading = _heading_text(lines[i])
+            ablated = any(heading.lower().startswith(d) for d in drop)
+            if ablated or (not include_extra and _section_tier(lines, i) == "extra"):
+                if ablated and dropped is not None:
+                    dropped.append(heading)
+                level = len(m.group(1))
+                j = i + 1
+                while j < len(lines):
+                    m2 = _HEADING_RE.match(lines[j])
+                    if m2 and len(m2.group(1)) <= level:
+                        break
+                    j += 1
+                i = j
+                continue
         keep.append(lines[i])
         i += 1
     return strip_prov("".join(keep))
@@ -156,8 +167,24 @@ EXTRA_INSTRUCTIONS = os.environ.get("EXTRA_INSTRUCTIONS", "").strip().lower() in
 
 SETUP_RAW = load_text_file("query-setup.md")
 SETUP_SQL = parse_setup_sql(SETUP_RAW)
-OPTIM_RAW = select_tiers(load_text_file("query-optimization.md"), EXTRA_INSTRUCTIONS)
-H3_RAW = select_tiers(load_text_file("h3-guide.md"), EXTRA_INSTRUCTIONS)
+# Guidance ablation (#522 audit): GUIDANCE_DROP names sections to leave out of the
+# `query` description, as heading prefixes separated by ";" (headings contain commas),
+# e.g. "Problem 3 — Raster pixels;Area Conversion". For the benchmark server only, to
+# measure whether a section still changes answers; /version reports what was dropped
+# so every transcript records it. An entry that matches no heading is a typo that
+# would silently measure nothing, so startup fails on it.
+GUIDANCE_DROP = [d.strip() for d in os.environ.get("GUIDANCE_DROP", "").split(";") if d.strip()]
+GUIDANCE_DROPPED: list[str] = []
+OPTIM_RAW = select_tiers(load_text_file("query-optimization.md"), EXTRA_INSTRUCTIONS,
+                         GUIDANCE_DROP, GUIDANCE_DROPPED)
+H3_RAW = select_tiers(load_text_file("h3-guide.md"), EXTRA_INSTRUCTIONS,
+                      GUIDANCE_DROP, GUIDANCE_DROPPED)
+_unmatched = [d for d in GUIDANCE_DROP
+              if not any(h.lower().startswith(d.lower()) for h in GUIDANCE_DROPPED)]
+if _unmatched:
+    raise SystemExit(f"GUIDANCE_DROP entries match no guidance heading: {_unmatched}")
+if GUIDANCE_DROPPED:
+    print(f"✂️ guidance sections dropped (GUIDANCE_DROP): {GUIDANCE_DROPPED}", file=sys.stderr)
 ROLE_RAW = load_text_file("assistant-role.md")
 
 # Opt-in DuckDB extensions beyond the stock httpfs/spatial/h3 set (issue #354).
@@ -1417,6 +1444,7 @@ async def _version(_request):
         "git_sha": GIT_SHA,
         "stac_catalog_url": _stac_public_catalog_url(),
         "public_base_url": _public_base_url(),
+        **({"guidance_dropped": GUIDANCE_DROPPED} if GUIDANCE_DROPPED else {}),
     })
 
 # -------------------------------------------------------------------------

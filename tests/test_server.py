@@ -87,6 +87,22 @@ class TestGuidanceTiers:
         doc = "## Solo\n\nWe use tier=extra pricing in this prose.\n"
         assert "tier=extra pricing" in select_tiers(doc, include_extra=False)
 
+    def test_drop_removes_a_section_and_its_children_and_records_it(self):
+        dropped = []
+        out = select_tiers(DOC, include_extra=True, drop=["charlie"], dropped=dropped)
+        assert "charlie body" not in out and "delta body" not in out
+        assert "alpha body" in out and "bravo body" in out
+        assert dropped == ["Charlie"]
+
+    def test_drop_matches_heading_prefix_case_insensitively(self):
+        dropped = []
+        select_tiers(DOC, include_extra=False, drop=["ALPH"], dropped=dropped)
+        assert dropped == ["Alpha"]
+
+    def test_no_drop_is_unchanged(self):
+        for flag in (False, True):
+            assert select_tiers(DOC, include_extra=flag, drop=[]) == select_tiers(DOC, include_extra=flag)
+
     def test_real_guides_shrink_with_the_flag_off_and_stay_valid(self):
         for fn in ("h3-guide.md", "query-optimization.md"):
             raw = load_text_file(fn)
