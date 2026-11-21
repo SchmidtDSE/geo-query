@@ -63,14 +63,14 @@ spec:
           sizeLimit: 50Gi
       containers:
       - name: server
-        # The v0.9.10 release (main at eec4968; includes #498, #501, #502).
+        # The v0.9.11 release (main at 5d84727; includes #520, #525, #526, #527).
         # Pinned by digest so both replicas converge on one build. APP_VERSION
         # below must match the tag; CI checks it.
-        image: ghcr.io/schmidtdse/geo-query:v0.9.10@sha256:d6c3637f4d7f1c3c63b46f587fb10150e730df16f07f5653ae758f3a94cc48db
+        image: ghcr.io/schmidtdse/geo-query:v0.9.11@sha256:89f4f961b2d54b9c2ba70f16a0c100044d548d92b483fddf758afbfd8d925941
         imagePullPolicy: IfNotPresent
         env:
         - name: APP_VERSION
-          value: "v0.9.10"
+          value: "v0.9.11"
         # Bearer-token auth (#43, #454): every route except /healthz and /version
         # (and public /tiles below) needs `Authorization: Bearer <token>`. The
         # server refuses to start if this directory holds no tokens.
