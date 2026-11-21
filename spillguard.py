@@ -56,6 +56,22 @@ _NODE_CLEAR_RATIO = 1.25
 # first is still returning.
 _FREEING_TTL = 30.0
 _FREEING_GRACE = 5.0
+# While no query runs, hand memory that queries freed back to the OS at most
+# this often. GEOS and other non-DuckDB code allocate through glibc, whose
+# per-thread arenas keep freed pages: an idle dev pod held 88 GiB that way for
+# hours, which kept it drained (#519).
+_TRIM_EVERY = 30.0
+
+
+def _malloc_trim():
+    """glibc's malloc_trim(0), or None where libc has none (macOS, musl)."""
+    try:
+        import ctypes
+        fn = ctypes.CDLL("libc.so.6").malloc_trim
+    except (OSError, AttributeError):
+        return None
+    fn.argtypes = [ctypes.c_size_t]
+    return lambda: fn(0)
 
 
 def _fraction(var: str, default: float) -> float:
@@ -192,7 +208,7 @@ class SpillGuard:
                  memory_min_victim: int | None = None,
                  spill_min_victim: int | None = None,
                  memory_lookahead: float | None = None, clock=None,
-                 memory_hard_fraction: float | None = None):
+                 memory_hard_fraction: float | None = None, trim=None):
         self.limit = limit
         self.root = root or spill_root()
         self.drain_at = (limit * (drain_fraction if drain_fraction is not None
@@ -244,6 +260,8 @@ class SpillGuard:
         # Spill directory -> (expiry on time.monotonic(), bytes) for connections
         # interrupted for memory, counted as freeing until then.
         self._memory_freeing: dict[str, tuple[float, int]] = {}
+        self._trim = trim if trim is not None else _malloc_trim()
+        self._last_trim = float("-inf")
         self._disk_pressure = False
         self._memory_pressure: str | None = None
         self.last_total = 0
@@ -330,7 +348,27 @@ class SpillGuard:
         if disk and self.disk_enabled:
             self._check_disk()
         if memory and self.memory_enabled:
+            self._release_freed()
             self._check_memory()
+
+    def _release_freed(self) -> None:
+        """With no query running, return freed heap memory to the OS."""
+        if self._trim is None:
+            return
+        now = self._clock()
+        if now - self._last_trim < _TRIM_EVERY:
+            return
+        with self._lock:
+            if self._conns:
+                return
+        self._last_trim = now
+        before = self._read_memory().pod_used
+        self._trim()
+        after = self._read_memory().pod_used
+        if before is not None and after is not None and before - after >= 1 << 30:
+            print(f"♻️ memory guard: no query running; returned "
+                  f"{(before - after) / 2**30:.1f} GiB of freed memory to the OS "
+                  f"(pod {after / 2**30:.1f} GiB)", file=sys.stderr)
 
     @staticmethod
     def _pick(candidates: list[tuple[int, int, str]], min_victim: int) -> tuple[int, str, str]:

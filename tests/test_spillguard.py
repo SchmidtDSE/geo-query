@@ -487,3 +487,48 @@ def test_real_memory_interrupt_stops_the_newer_query(tmp_path):
     stop.set()
     wd.join()
     assert outcome == {"old": "done", "new": "memory"}
+
+
+def test_idle_pod_returns_freed_memory_and_serves_again():
+    """An idle pod kept 88 GiB that queries had freed, in glibc's arenas, and
+    stayed drained for hours (#519). With no query running the guard trims, so
+    the next reading is what the pod really holds."""
+    trims = []
+
+    def trim():
+        trims.append(1)
+        box[0] = MemorySample(9 * _GiB, 160 * _GiB, 400 * _GiB)
+
+    guard, box = _mem_guard(MemorySample(88 * _GiB, 160 * _GiB, 400 * _GiB), trim=trim)
+    guard._memory_pressure = "pod"  # drained earlier, when queries held the memory
+    guard.check()
+    assert trims == [1]
+    assert not guard.under_pressure()
+
+
+def test_no_trim_while_a_query_runs_and_at_most_every_30s():
+    t = [1000.0]
+    trims = []
+    guard, box = _mem_guard(MemorySample(10 * _GiB, 160 * _GiB, 400 * _GiB),
+                            trim=lambda: trims.append(t[0]), clock=lambda: t[0])
+
+    class Conn:
+        def sql(self, _):
+            class R:
+                def fetchone(self):
+                    return ("/tmp/duckdb-x",)
+            return R()
+
+    conn = Conn()
+    d = guard.register(conn)
+    guard.check()
+    assert trims == []
+    guard.unregister(d)
+    guard.check()
+    assert trims == [1000.0]
+    t[0] += 10
+    guard.check()
+    assert trims == [1000.0]
+    t[0] += 25
+    guard.check()
+    assert trims == [1000.0, 1035.0]
