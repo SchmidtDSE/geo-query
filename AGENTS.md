@@ -94,7 +94,12 @@ rare outside glen-benchmark flights.
   drains the pod and interrupts queries before the cgroup OOM.
 - For benchmark load, add replicas for the flight and scale back after it.
   Do not shrink per-query resources. A lower `MCP_QUERY_CONCURRENCY` per pod
-  is acceptable, because it costs a single query nothing.
+  is acceptable, because it costs a single query nothing, and keeps heavy
+  queries from overlapping on one pod (#530).
+- Never raise a pod's resource requests above what it uses to protect it from
+  node memory pressure. That breaks NRP's usage policy. When a run needs more
+  headroom than NRP pods give, run it against the cirrus deployment
+  (`duckdb-mcp.carlboettiger.info`).
 
 ### MCP transport: stateless HTTP
 

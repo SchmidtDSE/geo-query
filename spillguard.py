@@ -72,6 +72,11 @@ def _malloc_trim():
         return None
     fn.argtypes = [ctypes.c_size_t]
     return lambda: fn(0)
+# A query the guard stopped that is still running this long after the interrupt
+# is logged. DuckDB acts on an interrupt only between steps, so a single long
+# library call, such as the GEOS union inside ST_Union_Agg, runs on to its end
+# (#530, duckdb/duckdb-spatial#927).
+_STOP_LATE_AFTER = 60.0
 
 
 def _fraction(var: str, default: float) -> float:
@@ -178,6 +183,10 @@ def instance_memory(conn) -> int | None:
     duckdb_memory() during a query. It is closed at once: an open cursor would
     keep the instance, its memory and its spill files alive after the query's own
     connection closes.
+
+    EXTERNAL_FILE_CACHE is left out: on a remote Parquet read it reserves the
+    whole file (4.3 GiB for wdpa.parquet) as the query starts, while the process
+    holds a fraction of that, and it made the guard stop the wrong query (#530).
     """
     try:
         cur = conn.cursor()
@@ -185,7 +194,7 @@ def instance_memory(conn) -> int | None:
         return None  # closed
     try:
         return int(cur.sql("SELECT coalesce(sum(memory_usage_bytes), 0) "
-                           "FROM duckdb_memory()").fetchone()[0])
+                           "FROM duckdb_memory() WHERE tag <> 'EXTERNAL_FILE_CACHE'").fetchone()[0])
     except Exception:
         return None
     finally:
@@ -262,6 +271,10 @@ class SpillGuard:
         self._memory_freeing: dict[str, tuple[float, int]] = {}
         self._trim = trim if trim is not None else _malloc_trim()
         self._last_trim = float("-inf")
+        # Spill directory -> (time.monotonic() of the interrupt, reason), until
+        # the query ends, to log how long the stop took (#530).
+        self._stopping: dict[str, tuple[float, str]] = {}
+        self.stop_late_after = _STOP_LATE_AFTER
         self._disk_pressure = False
         self._memory_pressure: str | None = None
         self.last_total = 0
@@ -294,9 +307,14 @@ class SpillGuard:
                 d = os.path.normpath(temp_dir)
                 self._conns.pop(d, None)
                 self._order.pop(d, None)
+                stopping = self._stopping.pop(d, None)
                 if d in self._memory_freeing:
                     expiry, nbytes = self._memory_freeing[d]
                     self._memory_freeing[d] = (min(expiry, time.monotonic() + _FREEING_GRACE), nbytes)
+            if stopping:
+                t, reason = stopping
+                print(f"🛑 query stopped for {reason} ended {time.monotonic() - t:.1f}s after "
+                      f"its interrupt ({d})", file=sys.stderr)
 
     def was_interrupted(self, temp_dir: str | None) -> str | None:
         """Why the guard interrupted this connection ("disk" or "memory"), or
@@ -317,6 +335,8 @@ class SpillGuard:
                 del self._interrupted[d]
             for d in [d for d, (expiry, _) in self._memory_freeing.items() if now > expiry]:
                 del self._memory_freeing[d]
+            for d in [d for d in self._stopping if d not in self._conns]:
+                del self._stopping[d]  # closed without unregistering
 
     def under_pressure(self) -> bool:
         return self._disk_pressure or self._memory_pressure is not None
@@ -393,6 +413,7 @@ class SpillGuard:
             ref = self._conns.get(victim)
             conn = ref() if ref else None
             self._interrupted[victim] = (time.monotonic(), reason)
+            self._stopping[victim] = (time.monotonic(), reason)
             if reason == "memory":
                 self._memory_freeing[victim] = (time.monotonic() + _FREEING_TTL, nbytes)
         if conn is None:
@@ -403,6 +424,16 @@ class SpillGuard:
             conn.interrupt()
         except Exception as e:
             print(f"⚠️ guard: interrupt failed: {e}", file=sys.stderr)
+        late = threading.Timer(self.stop_late_after, self._still_running, (victim,))
+        late.daemon = True
+        late.start()
+
+    def _still_running(self, victim: str) -> None:
+        with self._lock:
+            stopping = self._stopping.get(victim)
+        if stopping:
+            print(f"🚨 query still running {self.stop_late_after:g}s after its {stopping[1]} "
+                  f"guard interrupt; it frees nothing until it ends ({victim})", file=sys.stderr)
 
     def _check_disk(self) -> None:
         usage = self.usage()
