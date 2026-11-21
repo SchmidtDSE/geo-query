@@ -132,10 +132,9 @@ EXECUTABLE = {
     #   ordinate as LATITUDE, the opposite of how these files store it, and returns nan
     #   rather than erroring on lon/lat input — which is exactly how the guide came to
     #   claim the function was broken. Binding this keeps the claim honest.
-    "h3-guide.md:a0dab29752": {
-        "<line_geoparquet>": TRAILS_GPQ,
-        "<line_geom>": "geometry",
-    },
+    # proximity via grid_disk (#522): trails stand in for any point/feature hex
+    # with _cng_fid + h8; binds every function and column of the recipe.
+    "h3-guide.md:e011d791ba": {"<point hex>": TRAILS_HEX, "<area hex>": CD_HEX, "<km>": "5"},
     # presence-only over res-10 land children (#355): mean of a 0/1 flag, never
     #   promoted to the res-8 parent. ACE feature x NWI wetlands, no GAP column.
     "h3-guide.md:da766d501c": {
@@ -192,7 +191,6 @@ FRAGMENTS = {
     "h3-guide.md:ae094c7f8c": "COPY to a write path with a `SELECT ...` ellipsis (export idiom)",
     # --- query-optimization.md ---
     "query-optimization.md:2f7793ba77": "bare JOIN clause (include-h0-in-join idiom)",
-    "query-optimization.md:0681d81d61": "references an undefined `scope` CTE (join-before-aggregate illustration)",
     "query-optimization.md:e103e0c492": "`read_parquet('…')` ellipsis placeholder (DESCRIBE-to-find-a-column idiom)",
     "query-optimization.md:b344ccbf7e": "bare WHERE clause (fuzzy text match)",
     "query-optimization.md:557a390cc8": "bare WHERE clause (exact text match)",

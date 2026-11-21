@@ -26,7 +26,7 @@ registry (`s3config.py`, extensible per deployment via `S3_SOURCES`).
 - `enable_object_cache=true` - Reduces S3 requests
 - `httpfs` - Required for S3 access
 - `h3` - Required for H3 functions
-- `spatial` - Required for `ST_*` functions (line-data exact mileage, GeoParquet inspection)
+- `spatial` - Required for `ST_*` functions (line mileage clipped to an AOI)
 
 The registry-created `source_coop` secret is the anonymous, prefix-scoped
 fallback for the public source.coop mirror: DuckDB routes

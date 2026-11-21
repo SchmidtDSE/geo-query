@@ -38,26 +38,6 @@ JOIN read_parquet('<STAC_CARBON_HEX_PATH>') c
   ON p.h8 = c.h8 AND p.h0 = c.h0
 ```
 
-**Note:** `rook-ceph-rgw-nautiluss3.rook` is an internal endpoint only accessible from k8s. Always use it — not the public endpoint — to run queries.
-
-You must read parquet datasets from S3 using read_parquet(). There are no local tables.
-
-**Aggregate after the join, never before.** When joining a small scope to a large hex dataset, do the join against the raw `read_parquet(...)` of the large side. Wrapping the large side in a pre-aggregation CTE (`GROUP BY`, `MODE`, `SUM`) before the join forces DuckDB to scan every h0 partition of it — the small scope's h0 values cannot prune through an aggregation operator.
-
-```sql
--- Join first, aggregate after → only scope's h0 partitions opened
-WITH lc_on_scope AS (
-  SELECT s.h8, s.h0, l.lc_class
-  FROM scope s
-  JOIN read_parquet('<large_hex>') l USING (h8, h0)
-  WHERE l.lc_class IS NOT NULL
-)
-SELECT h8, h0, MODE(lc_class) AS dominant
-FROM lc_on_scope GROUP BY h8, h0;
-```
-
-The `WHERE l.lc_class IS NOT NULL` here keeps a no-data cell from poisoning the aggregate — but it also **changes which cells the answer describes**. When that column is only partly populated, see §9 before reporting the result as a share of the whole.
-
 ### Scoping by name or feature id (no region mask)
 <!-- prov: issue=#163 models=unrecorded added=2026-06-07 cell=bosl-pri-eez-area tier=core -->
 
@@ -120,12 +100,13 @@ WHERE sci_name = 'Rana draytonii'
 ```
 
 ## 5. GeoParquet geometry columns
-<!-- prov: issue=#48 models=unrecorded added=2026-05-03 cell=none tier=core -->
+<!-- prov: issue=#48,#522 models=unrecorded added=2026-11-20 cell=none tier=core -->
 
-GeoParquet files contain a geometry column (usually `geom`) typed as `GEOMETRY('OGC:CRS84')`.
-This type cannot be displayed in tabular output — the server drops it automatically.
-Avoid `SELECT *` on GeoParquet files; select only the columns you need. If you need
-coordinates, cast explicitly: `ST_AsText(geom) AS geom_wkt`.
+A GeoParquet file has one row per feature and a geometry column (`geom`, `geometry`
+or `SHAPE`) that the server drops from output. Read feature attributes from it (names,
+ids, measured area or length); do spatial work on the hex asset. Select only the
+columns you need, not `SELECT *`. For coordinates use `h3_cell_to_lat` /
+`h3_cell_to_lng` on the hex (H3 guide).
 
 ## 6. Apostrophes in string literals
 <!-- prov: issue=unrecorded models=unrecorded added=2026-06-24 cell=tpl-tates-hell-acres tier=core -->
@@ -162,10 +143,10 @@ total far smaller than expected is the signature of this trap.
 A vector feature's area or length is the value in its **own** column (`acres`,
 `length_km`), summed over `DISTINCT` feature id — tiling replicates that value on
 every cell the feature touches, so dedup by `_cng_fid` before summing.
-`COUNT(DISTINCT hN) * h3_cell_area(...)` is a larger, different number: it counts
-every partially-covered boundary cell as if the feature filled it. Use the hex
-only to *locate* the feature (mask, join, overlay); take the magnitude from the
-measured column. For the conserved or overlaid **share** of that total, weight by
+`COUNT(DISTINCT hN) * h3_cell_area(...)` also counts boundary cells the feature
+only partly fills, so when the feature has a measured column, take the magnitude
+from it and use the hex to *locate* the feature (mask, join, overlay). With no
+measured column, the hex area is the answer. For the conserved or overlaid **share** of that total, weight by
 the coverage fraction — area for polygons and rasters, length for lines — and keep
 the weight inside the same `SUM()` as the measure, not derived in a subquery the
 outer aggregate then ignores. (See the overlay rules in the H3 guide.)

@@ -234,6 +234,11 @@ def _format_columns(table_cols: list) -> list[str]:
     return lines
 
 
+# Shown under a flat (non-hex) asset of a dataset that also has a hex asset (#522).
+FLAT_ASSET_ROLE = ("One row per feature: use it for names, ids and measured columns. "
+                   "Overlap, area and distance use the hex asset.")
+
+
 def _is_queryable_asset(href: str, atype: str) -> bool:
     """True for assets the `query` tool reads via read_parquet()."""
     if "pmtiles" in atype or href.endswith(".pmtiles"):
@@ -285,7 +290,9 @@ def _extract_parquet_assets(col, compact: bool = False) -> list[str]:
     """
     assets = []
     shared_cols: dict = {}  # name -> col dict, in first-seen order (union of all assets)
-    for asset_id, asset in (getattr(col, "assets", None) or {}).items():
+    all_assets = getattr(col, "assets", None) or {}
+    has_hex = any("/hex" in (a.href or "") for a in all_assets.values())
+    for asset_id, asset in all_assets.items():
         href = asset.href
         atype = asset.media_type or ""
         title = asset.title or asset_id
@@ -314,6 +321,10 @@ def _extract_parquet_assets(col, compact: bool = False) -> list[str]:
             # column-choice time. Without this line they never reach the prompt.
             if asset.description:
                 assets.append(f"    - {asset.description}")
+            # Next to a hex asset, a flat file is for attributes: models picked it
+            # for overlays and distances when nothing said what it is for (#522).
+            if has_hex and "/hex" not in href:
+                assets.append(f"    - {FLAT_ASSET_ROLE}")
             # Asset-level STAC extension fields (h3, raster, vector)
             for ext_key in (
                 "h3:native_resolution",
