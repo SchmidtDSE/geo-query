@@ -1,4 +1,6 @@
 # In-cluster only: the benchmark server has no Ingress (bench-deployment.yaml).
+# Traffic goes through the HAProxy in bench-proxy.yaml, which gives each query
+# to an idle bench pod.
 apiVersion: v1
 kind: Service
 metadata:
@@ -6,7 +8,7 @@ metadata:
   namespace: biodiversity
 spec:
   selector:
-    app: bench-duckdb-mcp
+    app: bench-mcp-proxy
   ports:
     - protocol: TCP
       port: 8000
