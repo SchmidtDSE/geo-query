@@ -1,0 +1,150 @@
+# HAProxy in front of the benchmark MCP server.
+#
+# Each bench pod runs one query at a time (MCP_QUERY_CONCURRENCY=1, #530). A
+# plain Service picks a pod at random for each connection without knowing
+# whether it is busy, so in flight b1122 queries waited up to 15 minutes behind
+# a busy pod while most pods sat idle (84,484 s waiting vs 10,144 s running
+# over 497 queries).
+#
+# This proxy gives each `query` call to an idle pod. If every pod is busy, the
+# call waits here and goes to the first pod that frees up. Other MCP calls
+# (tools/list, get_stac_details, ...) do not take a pod's query slot, so they
+# go straight to the least busy pod.
+#
+# - bench-service.yaml points the Service glen-benchmark uses
+#   (bench-mcp-server-duckdb:8000) at this proxy, so clients and
+#   MCP_PUBLIC_BASE_URL do not change.
+# - The proxy finds the bench pods through the headless Service below, which
+#   lists only Ready pods, and also checks /readyz itself, so a pod the memory
+#   guard drains stops getting new queries.
+# - Off between flights, like bench-duckdb-mcp: replicas stays 0 here. A flight
+#   scales both:
+#     kubectl -n biodiversity scale deployment/bench-mcp-proxy --replicas=1
+# - Timeouts sit above the clients' 10-minute MCP timeout, so the client, not
+#   the proxy, decides when to give up.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: bench-mcp-proxy
+  namespace: biodiversity
+data:
+  haproxy.cfg: |
+    global
+      log stdout format raw local0 info
+      maxconn 4000
+      # Room to read the tool name from a request body with long SQL.
+      tune.bufsize 65536
+
+    defaults
+      mode http
+      log global
+      option httplog
+      timeout connect 5s
+      timeout http-request 60s
+      timeout client 20m
+      timeout server 20m
+      timeout queue 20m
+      timeout http-keep-alive 60s
+
+    resolvers kube
+      parse-resolv-conf
+      hold valid 5s
+      accepted_payload_size 8192
+
+    frontend mcp
+      bind :8000
+      option http-buffer-request
+      acl is_query req.body -m reg "\"name\"[[:space:]]*:[[:space:]]*\"query\""
+      use_backend query_slots if is_query
+      default_backend other_calls
+
+    # One query per pod: a call goes to an idle pod, or waits here for one.
+    backend query_slots
+      balance leastconn
+      option httpchk GET /readyz
+      default-server check inter 5s fall 1 rise 1 resolvers kube init-addr none maxconn 1
+      server-template mcp 48 bench-duckdb-mcp-pods.biodiversity.svc.cluster.local:8000
+
+    # Calls that do not take a query slot.
+    backend other_calls
+      balance leastconn
+      option httpchk GET /readyz
+      default-server check inter 5s fall 1 rise 1 resolvers kube init-addr none
+      server-template mcp 48 bench-duckdb-mcp-pods.biodiversity.svc.cluster.local:8000
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: bench-mcp-proxy
+  namespace: biodiversity
+spec:
+  replicas: 0
+  selector:
+    matchLabels:
+      app: bench-mcp-proxy
+  template:
+    metadata:
+      labels:
+        app: bench-mcp-proxy
+      annotations:
+        # Bump to roll the proxy after changing the ConfigMap.
+        bench-mcp-proxy/config-rev: "1"
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 99
+        runAsGroup: 99
+        seccompProfile:
+          type: RuntimeDefault
+      volumes:
+      - name: config
+        configMap:
+          name: bench-mcp-proxy
+      containers:
+      - name: haproxy
+        image: docker.io/library/haproxy:3.0.31-alpine@sha256:7430e63d3052198b18a40665b59a5826bc428e8bceb0c561d82258149ef855ee
+        imagePullPolicy: IfNotPresent
+        args: ["haproxy", "-W", "-db", "-f", "/usr/local/etc/haproxy/haproxy.cfg"]
+        volumeMounts:
+        - name: config
+          mountPath: /usr/local/etc/haproxy
+          readOnly: true
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop: ["ALL"]
+        resources:
+          requests:
+            memory: 128Mi
+            cpu: 100m
+          limits:
+            memory: 512Mi
+            cpu: "1"
+        ports:
+        - containerPort: 8000
+        readinessProbe:
+          tcpSocket:
+            port: 8000
+          periodSeconds: 5
+        livenessProbe:
+          tcpSocket:
+            port: 8000
+          initialDelaySeconds: 10
+          periodSeconds: 30
+---
+# Headless: DNS returns the Ready bench pods, which the proxy resolves itself.
+apiVersion: v1
+kind: Service
+metadata:
+  name: bench-duckdb-mcp-pods
+  namespace: biodiversity
+spec:
+  clusterIP: None
+  selector:
+    app: bench-duckdb-mcp
+  ports:
+    - protocol: TCP
+      port: 8000
+      targetPort: 8000

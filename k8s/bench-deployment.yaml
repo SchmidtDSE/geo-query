@@ -6,13 +6,16 @@
 #   pod traffic between namespaces, which is why this lives here.
 # - One query at a time per pod (MCP_QUERY_CONCURRENCY=1), so heavy benchmark
 #   queries never share a pod's memory (#530). Scale replicas for the flight
-#   instead: ~12 for 8 agent sessions.
+#   instead: ~12 for 8 agent sessions. The HAProxy in bench-proxy.yaml gives
+#   each query to an idle pod; a plain Service would pick pods at random and
+#   queue queries behind busy ones.
 # - Off between flights: replicas stays 0 in this file. A flight runs
 #     kubectl -n biodiversity set image deployment/bench-duckdb-mcp \
 #       server=ghcr.io/schmidtdse/geo-query:<tag>@sha256:<digest of the build under test>
 #     kubectl -n biodiversity set env deployment/bench-duckdb-mcp APP_VERSION=<tag>
 #     kubectl -n biodiversity scale deployment/bench-duckdb-mcp --replicas=12
-#   and scales back to 0 when it ends. Like dev, the image here is a floor, not
+#     kubectl -n biodiversity scale deployment/bench-mcp-proxy --replicas=1
+#   and scales both back to 0 when it ends. Like dev, the image here is a floor, not
 #   a record of what the last flight ran; each transcript records /version.
 # - Auth: its own token Secret, bench-mcp-tokens, holding one key
 #   (glen-benchmark) with the same value as the Jobs' glen-benchmark-mcp
