@@ -174,7 +174,7 @@ JOIN gebco_by_h6 g ON s.h6 = g.h6 AND s.h0 = g.h0
 ```
 
 ### Step 2: Fall back to h3_cell_to_parent() when no pre-computed column exists
-<!-- prov: issue=#35,#40,#430,#508 models=deepseek-v4-flash,qwen3-small added=2026-06-24 cell=h8-h9-join,orig-ecoregions-17pct,glob-people-in-pas tier=core -->
+<!-- prov: issue=#35,#40,#430,#508,#537 models=deepseek-v4-flash,qwen3-small added=2026-06-24 cell=h8-h9-join,orig-ecoregions-17pct,glob-people-in-pas tier=core -->
 
 Use `h3_cell_to_parent()` — not `h3_cell_to_children()` — when the pre-computed parent column is absent:
 
@@ -191,7 +191,7 @@ JOIN gfw ON h3_cell_to_parent(wdpa.h8, 6) = gfw.h6
 
 When one side lacks h0, omit it from that side. Prefer hex-partitioned variants (with h0) when available for partition pruning.
 
-Some datasets carry NULL in their finest pre-computed parent column for very large features (e.g. WDPA's 1,297 largest protected areas have `h8` but NULL `h9`). Use each feature's finest cell: join the rows that have `h9` on `h9`, and only the rows whose `h9` is NULL on `h3_cell_to_parent(other.h9, 8) = h8`. Joining every row on `h8` credits a whole parent cell to a feature that touches one child, and overcounts coverage. For a dataset that has only the coarse column, see *Feature coarser than the overlay layer* under Problem 3.
+Some datasets carry NULL in their finer pre-computed columns for very large features (e.g. IUCN species ranges fill `h8` only for small ranges; larger ranges stop at `h6` or `h5`). Use each feature's finest cell: join the rows that have `h8` on `h8`, the rows with NULL `h8` but a value in `h6` on `h3_cell_to_parent(other.h8, 6) = h6`, and so on down to the coarsest column. Joining every row on its coarsest column credits a whole parent cell to a feature that touches one child, and overcounts coverage. For a dataset that has only the coarse column, see *Feature coarser than the overlay layer* under Problem 3.
 
 ## Subsetting a dataset to a region (state, county, district)
 <!-- prov: issue=#322,#324,#325 models=qwen,nimbus added=2026-07-15 cell=h0-not-a-boundary,region-subset-finest-shared-res,mask-to-state-not-unit-set tier=core -->
@@ -269,7 +269,7 @@ GROUP BY sd.GEOID
 ---
 
 ### Problem 2 — Overlapping polygons (vector datasets)
-<!-- prov: issue=#3,#35 models=unrecorded added=2026-05-30 cell=dominant-class,dominant-class-per-cell tier=core -->
+<!-- prov: issue=#3,#35,#537 models=unrecorded added=2026-05-30 cell=dominant-class,dominant-class-per-cell,bio-amazon-basin-carbon-protected,glob-carbon-iplc-unprotected-vs-pa tier=core -->
 
 Some vector datasets store one row per *feature* (e.g. each protected area). Multiple features can cover the same hex, producing duplicate `h8` values. Joining the raw hex table directly inflates downstream aggregates (two features over the same cell sum carbon twice). Deduplicate to unique `(h8, h0)` pairs first:
 
@@ -283,6 +283,8 @@ JOIN unique_hexes u ON c.h8 = u.h8 AND c.h0 = u.h0
 JOIN carbon_data USING (h8, h0)
 GROUP BY country
 ```
+
+If the dataset has a coverage-fraction column (e.g. `cover_frac`), DISTINCT still counts every boundary cell as fully covered. Reduce each cell to one fraction first, `MAX(cover_frac)` grouped by the cell and `h0`, then weight by area as in query-optimization §8.
 
 **Validation:** Protected percentages must be ≤ 100%. If you see >100%, you're double-counting.
 
