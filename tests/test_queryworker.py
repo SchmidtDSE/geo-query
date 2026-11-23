@@ -14,7 +14,7 @@ import pytest
 from queryworker import (
     CANCELLED_MESSAGE,
     MEMORY_KILLED_MESSAGE,
-    WorkerPool,
+    WarmWorker,
     isolated_db,
     render_result,
 )
@@ -26,7 +26,7 @@ SLOW_SQL = "SELECT sum(hash(i)) AS s FROM range(1000000000000::BIGINT) t(i)"
 
 @pytest.fixture
 def pool():
-    p = WorkerPool(2, setup_sql="SET preserve_insertion_order=false")
+    p = WarmWorker(setup_sql="SET preserve_insertion_order=false")
     p.start()
     yield p
     p.close()
@@ -89,7 +89,7 @@ class TestSharedSetup:
         assert "613762345678901234" in md  # wide ints are not rounded (#387)
 
 
-class TestPool:
+class TestWarmWorker:
     def test_runs_a_query(self, pool):
         out = pool.run("SELECT 42 AS answer")
         assert "answer" in out and "42" in out
@@ -110,20 +110,20 @@ class TestPool:
         out = pool.run("SELECT 1", {"s3_key": "AKIDONLY1234"})
         assert out.startswith("SQL Error:") and "s3_secret is required" in out
 
-    def test_each_worker_serves_one_query(self, pool):
-        pids = set()
+    def test_each_query_gets_a_fresh_worker(self, pool):
+        spares = [pool.spare_pid()]
         for _ in range(3):
             pool.run("SELECT 1")
-            pids.update(w.proc.pid for w in pool._idle)
-        # Replacements keep arriving: more distinct workers than the pool size.
-        assert len(pids) > pool.size
+            spares.append(pool.spare_pid())
+        # A new spare after every query, and the old ones are gone.
+        assert len(set(spares)) == 4
+        assert not any(_alive(pid) for pid in spares[:-1])
         assert pool.running_pids() == []
 
     @pytest.mark.skipif(not sys.platform.startswith("linux"), reason="needs /proc")
     def test_workers_volunteer_for_the_oom_killer(self, pool):
-        w = pool._idle[0]
-        assert _wait_for(lambda: os.path.exists(f"/proc/{w.proc.pid}/oom_score_adj"))
-        assert _wait_for(lambda: open(f"/proc/{w.proc.pid}/oom_score_adj").read().strip() == "1000")
+        pid = pool.spare_pid()
+        assert _wait_for(lambda: open(f"/proc/{pid}/oom_score_adj").read().strip() == "1000")
 
     def test_time_limit_kills_the_worker(self, pool):
         started = time.monotonic()
@@ -144,7 +144,7 @@ class TestPool:
     def test_time_limit_stops_a_geos_union(self):
         """The case behind #530: ST_Union_Agg ignores DuckDB's interrupt, so only
         killing its process stops it."""
-        p = WorkerPool(1, setup_sql="LOAD spatial")
+        p = WarmWorker(setup_sql="LOAD spatial")
         p.start()
         try:
             sql = ("SELECT ST_Area(ST_Union_Agg(ST_Buffer(ST_Point(random()*100, random()*100), 1.5, 64))) "
@@ -177,7 +177,7 @@ class TestPool:
         monkeypatch.setenv("DUCKDB_TEMP_ROOT", str(tmp_path))
         # A tiny memory limit makes the query below spill; workers inherit it.
         monkeypatch.setenv("DUCKDB_MEMORY_LIMIT", "64MB")
-        p = WorkerPool(1, setup_sql="")
+        p = WarmWorker(setup_sql="")
         p.start()
         try:
             # A large DISTINCT spills its hash table within a second at 64 MB.
@@ -195,17 +195,16 @@ class TestPool:
             stop.set()
             t.join()
             assert spilled == [True], "the query never spilled, so this test checks nothing"
-            # Only the idle replacement's directory may remain, and it is empty
-            # because DuckDB creates its files on first spill.
+            # The spare's directory may exist, but it is empty until it spills.
             assert not _has_spill_files(tmp_path)
         finally:
             p.close()
 
-    def test_close_stops_idle_workers(self):
-        p = WorkerPool(2, setup_sql="")
+    def test_close_stops_the_spare(self):
+        p = WarmWorker(setup_sql="")
         p.start()
-        pids = [w.proc.pid for w in p._idle]
+        pid = p.spare_pid()
         p.close()
-        assert not any(_alive(pid) for pid in pids)
+        assert not _alive(pid)
         with pytest.raises(RuntimeError):
             p.run("SELECT 1")

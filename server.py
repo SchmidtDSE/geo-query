@@ -253,7 +253,7 @@ from s3config import rewrite_sql_hrefs
 from querytime import QueryClock, TIME_LIMIT_MESSAGE
 # Connection setup and rendering live in queryworker, shared with the worker
 # processes (#551). redact_credentials is re-exported for callers of this module.
-from queryworker import WorkerPool, error_text, isolated_db, redact_credentials, render_result  # noqa: F401
+from queryworker import WarmWorker, error_text, isolated_db, redact_credentials, render_result  # noqa: F401
 from dbconfig import (
     duckdb_max_temp_directory_size,
     duckdb_memory_limit,
@@ -317,8 +317,8 @@ def query(sql_query: str, s3_key: str = None, s3_secret: str = None, s3_endpoint
         return SPILL_BUSY_MESSAGE
     # One worker process per query (#551): it is killed at the time limit or
     # when the client goes, and its memory returns to the OS when it exits.
-    if WORKER_POOL is not None:
-        return WORKER_POOL.run(
+    if QUERY_WORKER is not None:
+        return QUERY_WORKER.run(
             sql_query,
             {"s3_key": s3_key, "s3_secret": s3_secret, "s3_endpoint": s3_endpoint,
              "s3_scope": s3_scope, "s3_region": s3_region, "s3_url_style": s3_url_style},
@@ -366,13 +366,20 @@ WITHOUT s3_scope, your endpoint applies to EVERY s3:// path in the query and the
 # offloaded the hex tools the same way; query was the remaining sync-on-loop tool.
 # A CapacityLimiter bounds concurrent scans so a burst can't oversubscribe the
 # pod's CPU/memory or starve the hex tools sharing anyio's default thread pool.
-_QUERY_LIMITER = anyio.CapacityLimiter(int(os.environ.get("MCP_QUERY_CONCURRENCY", "8")))
-
-# QUERY_WORKERS=1 runs each query in its own worker process (#551). The pool is
-# started at server start-up, not on import, so tests and tools that import this
-# module start no processes.
+#
+# QUERY_WORKERS=1 runs each query in its own worker process (#551), one at a time:
+# a heavy query owns the pod, and other queries go to other replicas. When several
+# workers overlap and the pod runs out of memory, the kernel kills the biggest,
+# which is the heavy query this server exists to finish, so workers mean
+# concurrency 1. The spare worker is started at server start-up, not on import,
+# so tests and tools that import this module start no processes.
 QUERY_WORKERS = os.environ.get("QUERY_WORKERS", "").strip() == "1"
-WORKER_POOL: WorkerPool | None = None
+_QUERY_CONCURRENCY = 1 if QUERY_WORKERS else int(os.environ.get("MCP_QUERY_CONCURRENCY", "8"))
+if QUERY_WORKERS and os.environ.get("MCP_QUERY_CONCURRENCY", "1").strip() != "1":
+    print("⚠️ MCP_QUERY_CONCURRENCY ignored: QUERY_WORKERS=1 runs one query at a time (#551)",
+          file=sys.stderr)
+_QUERY_LIMITER = anyio.CapacityLimiter(_QUERY_CONCURRENCY)
+QUERY_WORKER: WarmWorker | None = None
 
 
 async def _query_tool(
@@ -410,10 +417,10 @@ async def _query_tool(
         return result
 
     # With workers, a cancelled request (the client went away) stops waiting at
-    # once and the stop flag tells the pool to kill the query's worker (#540).
+    # once and the stop flag kills the query's worker (#540).
     try:
         return await anyio.to_thread.run_sync(_timed_query, limiter=_QUERY_LIMITER,
-                                              abandon_on_cancel=WORKER_POOL is not None)
+                                              abandon_on_cancel=QUERY_WORKER is not None)
     except BaseException:
         stop.set()
         raise
@@ -1173,9 +1180,9 @@ if __name__ == "__main__":
     print(_describe_transport_security(_TRANSPORT_SECURITY), file=sys.stderr)
 
     if QUERY_WORKERS:
-        WORKER_POOL = WorkerPool(_QUERY_LIMITER.total_tokens, SETUP_SQL, EXTRA_EXTENSIONS)
-        WORKER_POOL.start()
-        print(f"🧩 Query workers on: {WORKER_POOL.size} pre-started, one process per query (#551)",
+        QUERY_WORKER = WarmWorker(SETUP_SQL, EXTRA_EXTENSIONS)
+        QUERY_WORKER.start()
+        print("🧩 Query workers on: one query at a time, each in a fresh process (#551)",
               file=sys.stderr)
 
     print("🚀 Starting DuckDB MCP Server...", file=sys.stderr)

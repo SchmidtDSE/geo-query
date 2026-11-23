@@ -308,7 +308,7 @@ pytest --cov=. tests/
 - `MCP_AUTH_TOKEN` - a single bearer token, named `default`; older deployments use this
 - `MCP_AUTH_PUBLIC_TILES` - `true` serves `GET /tiles/...` without a token (default: off)
 - `MCP_ALLOWED_HOSTS`, `MCP_ALLOWED_ORIGINS` - turn on DNS-rebinding protection for `/mcp`, comma-separated (see [Running on localhost](#running-on-localhost))
-- `QUERY_WORKERS` - `1` runs each `query` call in its own worker process, which is killed at the time limit or when the client goes, and whose memory returns to the OS when it exits (default: off; see #551)
+- `QUERY_WORKERS` - `1` runs `query` calls one at a time, each in a fresh worker process that is killed at the time limit or when the client goes, and whose memory returns to the OS when it exits. `MCP_QUERY_CONCURRENCY` is then 1, so route other queries to other replicas (default: off; see #551)
 - `S3_ALLOWED_ENDPOINTS` - extra hosts accepted as the `query` tool's `s3_endpoint`, comma-separated
 - `TILE_BUCKET_BASE` - where `register_hex_tiles` writes tile pyramids (default: `s3://public-output`)
 - `TILE_WRITE_KEY_ID`, `TILE_WRITE_SECRET` - a key that writes only the tile bucket, for private replicas (see [Private hex tiles](#private-hex-tiles)); `TILE_WRITE_ENDPOINT` and `TILE_WRITE_USE_SSL` set its endpoint when it is not the default one

@@ -11,6 +11,9 @@ memory guard (#428) and the idle trim (#536) tried to do from inside:
 - each worker raises its own oom_score_adj to 1000, so when the pod or node
   runs out of memory the kernel kills a worker, not the server.
 
+Queries run one at a time, and one prepared worker waits for the next query
+so start-up stays off the request path. A heavy query gets the whole pod.
+
 The same module holds the connection setup and result rendering used by the
 in-process path (QUERY_WORKERS unset), so both paths run identical code.
 
@@ -29,7 +32,6 @@ import subprocess
 import sys
 import threading
 import time
-from collections import deque
 from contextlib import contextmanager
 
 import duckdb
@@ -379,7 +381,7 @@ def _worker_main() -> None:
     send({"ready": True, "spill_dir": spill_dir})
 
     line = sys.stdin.readline()
-    if not line:  # the server went away, or the pool is shutting down
+    if not line:  # the server went away, or the server is shutting down
         os._exit(0)
     req = json.loads(line)
     s3 = req.get("s3") or {}
@@ -396,7 +398,7 @@ def _worker_main() -> None:
 
 
 # ---------------------------------------------------------------------------
-# The pool, in the server process
+# The spare worker, in the server process
 # ---------------------------------------------------------------------------
 class _Worker:
     def __init__(self, proc: subprocess.Popen):
@@ -410,24 +412,26 @@ class _Ended(Exception):
     """The worker closed its stdout: it exited or was killed."""
 
 
-class WorkerPool:
-    """Keeps `size` workers started and prepared, and gives each query its own.
+class WarmWorker:
+    """Keeps one prepared worker waiting, and gives each query a fresh one.
 
-    A worker serves one query and is replaced as soon as it is taken, so the
-    start-up cost (Python, DuckDB, extensions, connection setup) is paid off the
-    request path. `run()` blocks; call it from a worker thread.
+    The server runs one query at a time when workers are on (#551): a heavy
+    query owns the pod, and other queries go to other replicas. The spare
+    worker exists only so that start-up (Python, DuckDB, extensions,
+    connection setup) is paid before a query arrives, not after. When a query
+    takes it, the next spare starts at once. `run()` blocks; call it from a
+    worker thread.
     """
 
     TICK = 0.25  # seconds between checks of the deadline and the stop flag
 
-    def __init__(self, size: int, setup_sql: str, extra_extensions=(),
+    def __init__(self, setup_sql: str, extra_extensions=(),
                  start_timeout: float = 120.0, python: str = sys.executable):
-        self.size = max(1, int(size))
         self._cfg = json.dumps({"setup_sql": setup_sql,
                                 "extra_extensions": list(extra_extensions)}) + "\n"
         self._start_timeout = start_timeout
         self._python = python
-        self._idle: deque[_Worker] = deque()
+        self._spare: _Worker | None = None
         self._running: set[_Worker] = set()  # workers with a query in flight
         self._lock = threading.Lock()
         self._closed = False
@@ -435,16 +439,21 @@ class WorkerPool:
     # -- lifecycle ---------------------------------------------------------
     def start(self) -> None:
         with self._lock:
-            while len(self._idle) < self.size:
-                self._idle.append(self._spawn())
+            if self._spare is None:
+                self._spare = self._spawn()
 
     def close(self) -> None:
         with self._lock:
             self._closed = True
-            idle, self._idle = list(self._idle), deque()
-        for w in idle:
-            self._kill(w)
-            self._reap(w)
+            spare, self._spare = self._spare, None
+        if spare is not None:
+            self._kill(spare)
+            self._reap(spare)
+
+    def spare_pid(self) -> int | None:
+        """PID of the waiting worker, if there is one."""
+        with self._lock:
+            return self._spare.proc.pid if self._spare else None
 
     def _spawn(self) -> _Worker:
         proc = subprocess.Popen(
@@ -457,13 +466,13 @@ class WorkerPool:
         return _Worker(proc)
 
     def _take(self) -> _Worker:
-        """A ready worker; starts a replacement for it."""
+        """A ready worker; starts the next spare."""
         for _attempt in range(3):
             with self._lock:
                 if self._closed:
-                    raise RuntimeError("worker pool is closed")
-                w = self._idle.popleft() if self._idle else self._spawn()
-                self._idle.append(self._spawn())
+                    raise RuntimeError("query workers are closed")
+                w = self._spare or self._spawn()
+                self._spare = self._spawn()
             try:
                 msg = self._read(w, time.monotonic() + self._start_timeout)
             except (_Ended, TimeoutError) as e:
