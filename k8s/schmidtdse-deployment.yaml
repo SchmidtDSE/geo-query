@@ -74,6 +74,15 @@ spec:
         # here with its own token. Changing this value breaks those rewrites.
         - name: MCP_PUBLIC_BASE_URL
           value: "http://duckdb-mcp.schmidtdse.svc.cluster.local:8000"
+        # ca-wolves data lives on the rustfs store, under the same bucket name it
+        # had on NRP Ceph (#529, glen-ops#292). An anonymous secret scoped to the
+        # bucket sends s3://public-ca-wolves/... there (path-style, TLS), so the
+        # app's paths and its h0=* globs work unchanged; the https form is
+        # rewritten to s3:// too. Apply only in the ca-wolves cutover window:
+        # before it, the rustfs copy is older than the data wolf-tracker writes
+        # to NRP.
+        - name: S3_SOURCES
+          value: '[{"name":"rustfs_ca_wolves","https_prefix":"https://rustfs.nrp-nautilus.io/public-ca-wolves/","s3_prefix":"s3://public-ca-wolves/","secret":{"endpoint":"rustfs.nrp-nautilus.io","scope":"s3://public-ca-wolves","url_style":"path","use_ssl":"true"}}]'
         # Bearer-token auth (#43, #454): every route except /healthz and /version
         # needs `Authorization: Bearer <token>`, /tiles included. One token per
         # app, from the schmidtdse/duckdb-mcp-tokens Secret mounted below: each
