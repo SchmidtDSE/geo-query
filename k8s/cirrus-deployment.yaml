@@ -2,7 +2,7 @@
 #
 # Derived from the NRP prod recipe (deployment.yaml) but retargeted at the
 # self-hosted cluster: it runs in the `mcp` namespace alongside gpu-mcp, is
-# pinned to the cirrus node, and reads from the in-cluster MinIO mirror instead
+# pinned to the cirrus node, and reads from the in-cluster RustFS mirror instead
 # of NRP Ceph so all data traffic stays on-node. Ingress/TLS/DNS are handled by
 # Traefik + cert-manager + external-dns (see cirrus-ingress.yaml).
 #
@@ -10,7 +10,7 @@
 # - bearer-token auth from the duckdb-mcp-auth Secret (one file per caller);
 # - non-root, read-only root filesystem, no service-account token mounted;
 # - every DuckDB connection runs dbconfig.lock_down() (built into the image);
-# - cirrus-networkpolicy.yaml limits egress to in-cluster MinIO, DNS and AWS S3
+# - cirrus-networkpolicy.yaml limits egress to in-cluster rustfs-s3, DNS and AWS S3
 #   us-west-2 (source.coop public data).
 #
 # The token Secret must exist before applying (never commit a token):
@@ -31,7 +31,7 @@ spec:
       labels:
         app: duckdb-mcp
     spec:
-      # Pin to cirrus: MinIO and Traefik both live on cirrus, so co-locating the
+      # Pin to cirrus: rustfs-s3 and Traefik both live on cirrus, so co-locating the
       # server keeps S3 reads on-node rather than crossing the 1Gb VXLAN wire.
       nodeSelector:
         kubernetes.io/hostname: cirrus
@@ -78,27 +78,27 @@ spec:
           value: /etc/mcp-tokens
         - name: MCP_AUTH_PUBLIC_TILES
           value: "true"
-        # In-cluster MinIO mirror. STAC metadata + S3 data both resolve to the
-        # on-node MinIO S3 endpoint (plain http, path-style).
+        # In-cluster RustFS mirror (rustfs-s3). STAC metadata + S3 data both resolve
+        # to the on-node S3 endpoint (plain http, path-style).
         - name: STAC_CATALOG_URL
-          value: "http://minio-svc.minio.svc.cluster.local:9000/public-data/stac/catalog.json"
+          value: "http://rustfs-s3.rustfs.svc.cluster.local:9000/public-data/stac/catalog.json"
         # Same catalog, external address, advertised by browse_stac_catalog and
         # GET /version (#346).
         - name: STAC_PUBLIC_CATALOG_URL
           value: "https://s3.carlboettiger.info/public-data/stac/catalog.json"
-        # Reroute nrp_ceph STAC metadata fetches to in-cluster MinIO.
+        # Reroute nrp_ceph STAC metadata fetches to in-cluster rustfs-s3.
         - name: S3_ENDPOINT_URL
-          value: "http://minio-svc.minio.svc.cluster.local:9000"
+          value: "http://rustfs-s3.rustfs.svc.cluster.local:9000"
         # The mirror's STAC hrefs name its public host: s3.carlboettiger.info since
         # 2026-11-18, minio.carlboettiger.info before (still an alias). Route both
         # data reads (→ s3://, default secret) and STAC-JSON fetches to the
         # in-cluster Service: egress to the public host is blocked by
         # cirrus-networkpolicy.yaml. An unmapped host fails every collection.
         - name: S3_SOURCES
-          value: '[{"name":"minio","https_prefix":"https://minio.carlboettiger.info/","s3_prefix":"s3://","metadata_url_prefix":"http://minio-svc.minio.svc.cluster.local:9000/"},{"name":"mirror","https_prefix":"https://s3.carlboettiger.info/","s3_prefix":"s3://","metadata_url_prefix":"http://minio-svc.minio.svc.cluster.local:9000/"}]'
-        # DuckDB default `s3` secret: bare host, http, path-style for MinIO.
+          value: '[{"name":"minio","https_prefix":"https://minio.carlboettiger.info/","s3_prefix":"s3://","metadata_url_prefix":"http://rustfs-s3.rustfs.svc.cluster.local:9000/"},{"name":"mirror","https_prefix":"https://s3.carlboettiger.info/","s3_prefix":"s3://","metadata_url_prefix":"http://rustfs-s3.rustfs.svc.cluster.local:9000/"}]'
+        # DuckDB default `s3` secret: bare host, http, path-style for rustfs-s3.
         - name: S3_DEFAULT_ENDPOINT
-          value: "minio-svc.minio.svc.cluster.local:9000"
+          value: "rustfs-s3.rustfs.svc.cluster.local:9000"
         - name: S3_DEFAULT_USE_SSL
           value: "false"
         - name: MCP_PUBLIC_BASE_URL
