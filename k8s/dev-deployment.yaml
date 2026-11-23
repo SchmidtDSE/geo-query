@@ -83,12 +83,6 @@ spec:
         # Hex tiles stay public: their data is in the public-output bucket.
         - name: MCP_AUTH_PUBLIC_TILES
           value: "true"
-        # Boot even if the Ceph STAC catalog is unreachable at startup, so the
-        # server can serve the source.coop mirror during a Ceph outage (#260).
-        # Discovery is empty until Ceph returns; known/inline datasets still work.
-        # Dev-only for now; prod keeps the default fail-fast until proven out.
-        - name: STAC_ALLOW_DEGRADED_START
-          value: "true"
         # Pod's cgroup memory limit → DuckDB memory_limit (~80%), so an oversized
         # query spills to /tmp instead of OOM-killing the replica and every
         # co-tenant query on it (#270).

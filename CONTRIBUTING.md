@@ -81,7 +81,7 @@ will merge.
   [GitHub Issue](https://github.com/SchmidtDSE/geo-query/issues).
 - **Questions / ideas:** start a
   [GitHub Discussion](https://github.com/SchmidtDSE/geo-query/discussions).
-- **Dataset questions:** use the `browse_stac_catalog` tool or browse the
+- **Dataset questions:** browse the
   [public STAC catalog](https://s3-west.nrp-nautilus.io/public-data/stac/catalog.json).
 
 ## License

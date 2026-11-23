@@ -403,34 +403,6 @@ class TestQueryFunction:
         assert "19573561.06" in result
 
 
-class TestResourceFunctions:
-    """Test MCP resource functions."""
-
-    def test_browse_stac_catalog_returns_string(self):
-        """Test that browse_stac_catalog returns a string."""
-        from server import browse_stac_catalog
-        result = browse_stac_catalog()
-        assert isinstance(result, str)
-
-    def test_get_stac_details_found(self):
-        """Test getting details for an existing dataset."""
-        from server import get_stac_details
-        from stac import STAC_DATASETS
-
-        if STAC_DATASETS:
-            test_key = next(iter(STAC_DATASETS.keys()), None)
-            if test_key:
-                result = get_stac_details(test_key)
-                assert isinstance(result, str)
-                assert len(result) > 0
-
-    def test_get_stac_details_not_found(self):
-        """Test getting details for non-existent dataset."""
-        from server import get_stac_details
-        result = get_stac_details("nonexistent_dataset_xyz")
-        assert "not found" in result.lower()
-
-
 class TestToolInjectedContext:
     """Test that tool context is properly constructed."""
     
@@ -1015,43 +987,22 @@ class TestHealthz:
             app.add_middleware(_BearerAuthMiddleware)
         return app
 
-    def test_readyz_follows_the_catalog_and_healthz_does_not(self, monkeypatch):
-        """A pod with no catalog (booted DEGRADED, never loaded) is alive but not
-        ready, so it leaves the Service and keeps retrying (#429)."""
-        import server
-        from starlette.testclient import TestClient
-        client = TestClient(self._build_app())
-        monkeypatch.setattr(server, "_READY_WITHOUT_CATALOG", False)
-        monkeypatch.setattr(server, "_stac_catalog_loaded", lambda: True)
-        assert client.get("/readyz").status_code == 200
-        monkeypatch.setattr(server, "_stac_catalog_loaded", lambda: False)
-        r = client.get("/readyz")
-        assert r.status_code == 503 and r.json()["ok"] is False
-        assert client.get("/healthz").status_code == 200
 
     def test_readyz_fails_under_spill_pressure(self, monkeypatch):
         """A replica short of spill disk leaves the Service (#428)."""
         import server
         from starlette.testclient import TestClient
-        monkeypatch.setattr(server, "_stac_catalog_loaded", lambda: True)
         monkeypatch.setattr(server.SPILL_GUARD, "under_pressure", lambda: True)
         for reason in ("spill disk under pressure", "node memory under pressure"):
             monkeypatch.setattr(server.SPILL_GUARD, "pressure_reason", lambda: reason)
             r = TestClient(self._build_app()).get("/readyz")
             assert r.status_code == 503 and r.json()["reason"] == reason
 
-    def test_readyz_opt_out_serves_without_a_catalog(self, monkeypatch):
-        import server
-        from starlette.testclient import TestClient
-        monkeypatch.setattr(server, "_READY_WITHOUT_CATALOG", True)
-        monkeypatch.setattr(server, "_stac_catalog_loaded", lambda: False)
-        assert TestClient(self._build_app()).get("/readyz").status_code == 200
 
     def test_readyz_bypasses_auth_middleware(self, monkeypatch):
         import server
         from starlette.testclient import TestClient
         monkeypatch.setattr(server, "_MCP_AUTH_TOKEN", "test-token")
-        monkeypatch.setattr(server, "_stac_catalog_loaded", lambda: True)
         client = TestClient(self._build_app(with_auth_middleware=True))
         assert client.get("/readyz").status_code == 200
 
@@ -1119,10 +1070,10 @@ class TestHealthz:
     def test_version_never_leaks_the_internal_catalog_url(self, monkeypatch):
         """/version is auth-exempt, so it reports only the client-facing catalog URL.
         The in-cluster address stays inside authenticated MCP responses (#346)."""
-        import server, stac
+        import server
         from starlette.testclient import TestClient
-        monkeypatch.setattr(
-            stac, "STAC_CATALOG_URL", "http://minio-svc.minio.svc.cluster.local:9000/catalog.json"
+        monkeypatch.setenv(
+            "STAC_CATALOG_URL", "http://minio-svc.minio.svc.cluster.local:9000/catalog.json"
         )
         monkeypatch.setenv("STAC_PUBLIC_CATALOG_URL", "https://minio.test/catalog.json")
         client = TestClient(self._build_app())
@@ -1133,10 +1084,10 @@ class TestHealthz:
     def test_version_catalog_url_defaults_to_internal_when_no_public_set(self, monkeypatch):
         """Unset → the server's own catalog URL, which on NRP prod is already public.
         Clients get a usable value with no extra configuration."""
-        import server, stac
+        import server
         from starlette.testclient import TestClient
         monkeypatch.delenv("STAC_PUBLIC_CATALOG_URL", raising=False)
-        monkeypatch.setattr(stac, "STAC_CATALOG_URL", "https://s3-west.test/catalog.json")
+        monkeypatch.setenv("STAC_CATALOG_URL", "https://s3-west.test/catalog.json")
         client = TestClient(self._build_app())
         assert client.get("/version").json()["stac_catalog_url"] == "https://s3-west.test/catalog.json"
 
@@ -1816,175 +1767,8 @@ class TestBuildFailureMarker:
         assert "synthetic build failure" in failed["error"]
 
 
-class TestStacStartupGate:
-    """_enforce_stac_startup_gate: fail-fast on an unreachable root catalog, with
-    an opt-in degraded start for serving the source.coop mirror during an outage (#260)."""
-
-    def test_boots_normally_when_root_loaded(self, monkeypatch):
-        import server
-        monkeypatch.setattr(server, "STAC_LOAD_ERRORS", {})
-        assert server._enforce_stac_startup_gate() is False
-
-    def test_exits_when_root_failed_and_flag_unset(self, monkeypatch):
-        import server
-        monkeypatch.setattr(server, "STAC_LOAD_ERRORS", {"__root__": "ConnectTimeout"})
-        monkeypatch.delenv("STAC_ALLOW_DEGRADED_START", raising=False)
-        with pytest.raises(SystemExit) as exc:
-            server._enforce_stac_startup_gate()
-        assert exc.value.code == 1
-
-    def test_degraded_start_when_flag_set(self, monkeypatch):
-        import server
-        monkeypatch.setattr(server, "STAC_LOAD_ERRORS", {"__root__": "ConnectTimeout"})
-        monkeypatch.setenv("STAC_ALLOW_DEGRADED_START", "true")
-        assert server._enforce_stac_startup_gate() is True
-
-    def test_flag_is_case_and_value_tolerant(self, monkeypatch):
-        import server
-        monkeypatch.setattr(server, "STAC_LOAD_ERRORS", {"__root__": "boom"})
-        for val in ("1", "TRUE", "Yes", "on"):
-            monkeypatch.setenv("STAC_ALLOW_DEGRADED_START", val)
-            assert server._enforce_stac_startup_gate() is True
-        # A non-truthy value still fails fast.
-        monkeypatch.setenv("STAC_ALLOW_DEGRADED_START", "false")
-        with pytest.raises(SystemExit):
-            server._enforce_stac_startup_gate()
-
-
-class TestCatalogScopeIsNotAToolArgument:
-    """#420: catalog scope is a deployment property, not a model-supplied argument.
-
-    The model must not be able to re-decide, per call, which catalog (and whose
-    credential) the server reads. `STAC_CATALOG_URL` / `STAC_CATALOG_TOKEN` say it
-    once per deployment, exactly as the S3 source registry does for credentials.
-    """
-
-    SCOPED_TOOLS = ("browse_stac_catalog", "get_stac_details", "get_collection")
-
-    def test_signatures_carry_no_catalog_scope(self):
-        import inspect
-        import server
-        for name in self.SCOPED_TOOLS:
-            params = inspect.signature(getattr(server, name)).parameters
-            assert "catalog_url" not in params, f"{name} still takes catalog_url"
-            assert "catalog_token" not in params, f"{name} still takes catalog_token"
-
-    def test_tools_list_does_not_advertise_catalog_scope(self):
-        """Verification 1: `tools/list` no longer offers the parameters."""
-        import server
-        registered = server.mcp._tool_manager._tools
-        for name in self.SCOPED_TOOLS:
-            if name not in registered:  # browse is discovery-gated
-                continue
-            props = registered[name].parameters.get("properties", {})
-            assert "catalog_url" not in props, f"{name} schema still advertises catalog_url"
-            assert "catalog_token" not in props, f"{name} schema still advertises catalog_token"
-
-    def test_inline_collection_still_resolves_unchanged(self):
-        """Verification 2: inline `collection` — the production path — is untouched."""
-        import server
-        out = server.get_stac_details(
-            "anything",
-            collection={"id": "inline-demo", "title": "Inline Demo",
-                        "description": "from the client"},
-        )
-        assert "inline-demo" in out or "Inline Demo" in out
-
-    @pytest.mark.parametrize("legacy", ["catalog_url", "catalog_token"])
-    def test_legacy_argument_is_ignored_not_rejected(self, legacy):
-        """Verification 4, plus the migration claim.
-
-        A client still sending the old arguments (the wyoming sidecar injects
-        `catalog_url`) must not get an error — MCP argument validation drops
-        fields absent from the schema — and the value must not be honoured: no
-        fetch of the foreign catalog is attempted.
-        """
-        import asyncio
-        import stac
-        import server
-
-        tool = server.mcp._tool_manager._tools["get_stac_details"]
-        with patch("stac.pystac.Catalog.from_file",
-                   side_effect=AssertionError("foreign catalog was fetched")), \
-             patch("stac.fetch_stac_catalog",
-                   side_effect=AssertionError("foreign catalog was fetched")):
-            result = asyncio.run(tool.run({
-                "dataset_id": "anything",
-                legacy: "https://not-ours.example.org/catalog.json",
-                "collection": {"id": "inline-demo", "title": "Inline Demo",
-                               "description": "from the client"},
-            }))
-        assert "inline-demo" in str(result) or "Inline Demo" in str(result)
-
-
-class TestDiscoveryIsOptOutPerDeployment:
-    """#420 proposal 2: whole-catalog discovery is registered only where wanted."""
-
-    def _fresh_server(self):
-        from mcp.server.fastmcp import FastMCP
-        return FastMCP("discovery-test")
-
-    def test_absent_by_default(self, monkeypatch):
-        """Default off: discovery belongs to tools outside this server."""
-        import server
-        monkeypatch.delenv("STAC_DISCOVERY", raising=False)
-        fresh = self._fresh_server()
-        assert server._register_stac_discovery(fresh) is False
-        assert "browse_stac_catalog" not in {t.name for t in fresh._tool_manager.list_tools()}
-
-    def test_registered_when_deployment_opts_in(self, monkeypatch):
-        import server
-        monkeypatch.setenv("STAC_DISCOVERY", "1")
-        fresh = self._fresh_server()
-        assert server._register_stac_discovery(fresh) is True
-        assert "browse_stac_catalog" in {t.name for t in fresh._tool_manager.list_tools()}
-
-    def test_absent_when_deployment_opts_out(self, monkeypatch):
-        """Verification 3: with discovery disabled the tool is not in `tools/list`.
-
-        It is not registered at all — a curated app's model is never told about a
-        tool it would only get `Unknown tool` from.
-        """
-        import server
-        for val in ("0", "false", "off", "no", "FALSE"):
-            monkeypatch.setenv("STAC_DISCOVERY", val)
-            fresh = self._fresh_server()
-            assert server._register_stac_discovery(fresh) is False, val
-            assert "browse_stac_catalog" not in {
-                t.name for t in fresh._tool_manager.list_tools()
-            }, val
-
-    def test_catalog_list_resource_follows_the_same_gate(self, monkeypatch):
-        """`catalog://list` enumerates the whole catalog too, so it goes with it."""
-        import asyncio
-        import server
-
-        monkeypatch.setenv("STAC_DISCOVERY", "0")
-        off = self._fresh_server()
-        server._register_stac_discovery(off)
-        assert not [r for r in asyncio.run(off.list_resources())
-                    if str(r.uri).startswith("catalog://list")]
-
-        monkeypatch.setenv("STAC_DISCOVERY", "1")
-        on = self._fresh_server()
-        server._register_stac_discovery(on)
-        assert [r for r in asyncio.run(on.list_resources())
-                if str(r.uri).startswith("catalog://list")]
-
-    def test_per_dataset_lookup_survives_discovery_being_off(self):
-        """Turning discovery off scopes the catalog, it does not remove metadata
-        lookup: `get_stac_details` / `catalog://{id}` still resolve against the
-        deployment's own catalog."""
-        import asyncio
-        import server
-        assert "get_stac_details" in server.mcp._tool_manager._tools
-        templates = asyncio.run(server.mcp.list_resource_templates())
-        assert any("catalog://{dataset_id}" == t.uriTemplate for t in templates)
-
-
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
-
 
 
 class TestSpillGuardInQuery:

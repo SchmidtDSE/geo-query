@@ -38,8 +38,8 @@ server on this machine, stop. The workflow is: land the change on dev (dev track
 follow [docs/guide/mirror-failover.md](docs/guide/mirror-failover.md) — the single
 runbook for the MinIO mirror and the mirror-configured head at
 `duckdb-mcp.carlboettiger.info`. Its "For agents querying through MCP" section is
-the short version: the normal STAC tools work on a mirror head; use the paths the
-tools return verbatim. Older outage notes elsewhere describing a source.coop route
+the short version: on a mirror head, use the catalog's paths verbatim; `query`
+reads them as `s3://`. Older outage notes elsewhere describing a source.coop route
 are superseded.
 
 ## Contributing
@@ -327,7 +327,7 @@ feature — state a thing once, in one layer, and point to detail rather than co
 
 | Layer | Owns | Examples |
 |---|---|---|
-| **dataset STAC** (in `boettiger-lab/data-workflows`) | facts true of *one dataset* — surfaced by `get_stac_details` exactly when the model is choosing columns | "this file repeats sites — dedup by `ramsarid`"; no-data sentinel codes; which column is the feature id; native resolution |
+| **dataset STAC** (in `boettiger-lab/data-workflows`) | facts true of *one dataset* — surfaced by the client's catalog tool (e.g. glen's `get_stac_details`) exactly when the model is choosing columns | "this file repeats sites — dedup by `ramsarid`"; no-data sentinel codes; which column is the feature id; native resolution |
 | **`h3-guide.md`** | general H3 / hex model & patterns | resolution direction, cell-area table, parent-resolution joins, multiple-rows-per-*hex* |
 | **`query-optimization.md`** | general SQL-writing rules, cross-dataset | include `h0` in joins, NaN poisons `SUM`, fuzzy vs exact text match |
 | **server.py CRITICAL block** | the few foundational invariants, read first, ~never change | no tables, use `read_parquet`, trust STAC paths verbatim, DPP mask-before-aggregate |

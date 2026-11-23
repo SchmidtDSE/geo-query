@@ -16,7 +16,6 @@ from rebinding import transport_security_from_env, describe as _describe_transpo
 from mcp.shared.session import BaseSession
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import JSONResponse
-from stac import STAC_DATASETS, STAC_LOAD_ERRORS, STAC_CATALOG_URL, list_datasets as _stac_list, get_dataset as _stac_get, get_collection as _stac_get_collection, public_catalog_url as _stac_public_catalog_url, start_periodic_refresh as _stac_start_periodic_refresh, discovery_enabled as _stac_discovery_enabled, catalog_loaded as _stac_catalog_loaded, default_catalog_token as _stac_default_catalog_token
 
 # Workaround for https://github.com/SchmidtDSE/geo-query/issues/5
 # send_notification crashes with ClosedResourceError when the client disconnects
@@ -418,96 +417,14 @@ def get_isolated_db(s3_key: str = None, s3_secret: str = None, s3_endpoint: str 
         conn.close()
 
 # -------------------------------------------------------------------------
-# 5. MCP RESOURCES (Schema Browsing)
-# -------------------------------------------------------------------------
-# `catalog://list` enumerates the whole configured catalog, so it is part of the
-# discovery surface and registered with it (below), not unconditionally.
-def catalog_list() -> str:
-    return _stac_list()
-
-@mcp.resource("catalog://{dataset_id}")
-def catalog_dataset(dataset_id: str) -> str:
-    return _stac_get(dataset_id)
-
-# -------------------------------------------------------------------------
-# 6. MCP TOOLS — Dataset Discovery
-# -------------------------------------------------------------------------
-# Catalog scope is a deployment property, not a tool argument (#420). None of
-# these tools take `catalog_url` / `catalog_token`: which catalog this server
-# serves is `STAC_CATALOG_URL` (+ `STAC_CATALOG_TOKEN` when it is private), set
-# once per deployment, exactly as S3 credentials are. A client that still sends
-# the old arguments is not broken — MCP argument validation drops fields that are
-# not in the schema — but the value is ignored and resolution happens against the
-# deployment's own catalog. Inline `collection` / `catalog` remain the primary
-# contract ("carry the links"); see docs/architecture/catalog-sourcing.md.
-def browse_stac_catalog(
-    catalog: dict = None,
-) -> str:
-    """Browse the full public STAC catalog to discover datasets not already loaded in your app.
-    Use when the user asks about data outside your pre-configured layers.
-    Optionally provide catalog inline (a Catalog dict with nested `children: [<collection dict>, ...]`)
-    to skip the HTTP fetch entirely — useful for OAuth-walled deployments where the
-    client already has the catalog content cached."""
-    return _stac_list(catalog=catalog)
-
-@mcp.tool()
-def get_stac_details(
-    dataset_id: str,
-    collection: dict = None,
-) -> str:
-    """Fetch metadata (parquet paths, column schemas) for any STAC collection by ID.
-    Returns markdown formatted for LLM consumption (use get_collection for structured JSON).
-    Optionally provide collection inline (a Collection dict, optionally with embedded
-    `children: [<sub-collection dict>, ...]`) to skip the HTTP fetch entirely."""
-    return _stac_get(dataset_id, collection=collection)
-
-@mcp.tool()
-def get_collection(
-    collection_id: str,
-    collection: dict = None,
-) -> dict:
-    """Return structured STAC collection metadata as JSON for programmatic use.
-
-    Unlike get_stac_details (markdown for LLM consumption), this returns the
-    raw collection dict with all assets (parquet, PMTiles, COG, GeoJSON),
-    per-asset STAC extension fields (table:columns, raster:bands, vector:layers),
-    full collection metadata, and nested child collections. S3 paths are pre-resolved.
-
-    Optionally provide collection inline (a Collection dict, optionally with embedded
-    `children: [<sub-collection dict>, ...]`) to skip the HTTP fetch — output round-trips
-    back into the same parameter.
-
-    Intended for app code that builds map layers and system prompts programmatically."""
-    return _stac_get_collection(collection_id, collection=collection)
-
-
-def _register_stac_discovery(server) -> bool:
-    """Register the whole-catalog discovery surface if this deployment enables it.
-
-    `browse_stac_catalog` and `catalog://list` are the only surfaces whose purpose
-    is to enumerate everything the configured catalog holds. A curated app
-    deployment sets `STAC_DISCOVERY=0` and they simply never appear in
-    `tools/list` — the client reads the live registry, so the model is never told
-    about a tool it cannot call. Returns whether they were registered.
-    """
-    if not _stac_discovery_enabled():
-        return False
-    server.resource("catalog://list")(catalog_list)
-    server.tool()(browse_stac_catalog)
-    return True
-
-
-DISCOVERY_ENABLED = _register_stac_discovery(mcp)
-
-# -------------------------------------------------------------------------
-# 7. MCP PROMPTS (Personas for Smart Clients)
+# 5. MCP PROMPTS (Personas for Smart Clients)
 # -------------------------------------------------------------------------
 @mcp.prompt("geospatial-analyst")
 def analyst_persona() -> str:
     return ROLE_RAW
 
 # -------------------------------------------------------------------------
-# 8. TOOL DEFINITION — SQL Query
+# 6. TOOL DEFINITION — SQL Query
 # -------------------------------------------------------------------------
 SECRET_FUNCTIONS = re.compile(r"\b(duckdb_secrets|which_secret)\b", re.IGNORECASE)
 
@@ -1322,7 +1239,7 @@ def mount_tiles(app):
     app.add_route("/tiles/{namespace}/{name}/metadata.json", serve_metadata, methods=["GET"])
 
 # -------------------------------------------------------------------------
-# 9. OPTIONAL BEARER TOKEN AUTH
+# 7. OPTIONAL BEARER TOKEN AUTH
 # -------------------------------------------------------------------------
 # Named tokens, one per caller (#454): MCP_AUTH_TOKENS_DIR holds one file per
 # token, named for the caller (a mounted Secret). MCP_AUTH_TOKEN is the older
@@ -1401,27 +1318,21 @@ async def _healthz(_request):
     return JSONResponse({"ok": True, "version": APP_VERSION})
 
 
-# A deployment that should keep taking traffic with no catalog, e.g. a mirror head
-# whose clients pass STAC entries inline during an outage, opts out of /readyz's
-# catalog check.
-_READY_WITHOUT_CATALOG = os.environ.get("STAC_READY_WITHOUT_CATALOG", "").strip().lower() in (
-    "1", "true", "yes", "on")
-
-
 async def _readyz(_request):
-    # Readiness, separate from liveness (#429). A pod that booted DEGRADED
-    # (STAC_ALLOW_DEGRADED_START) and still has no catalog stays alive, so its
-    # periodic refresh keeps retrying, but leaves the Service until it loads.
-    # Like /healthz, async and I/O-free, so a starved event loop also fails it.
-    # Also out of the Service while spill disk or memory is short (#428), so new
-    # queries go to other replicas instead of pushing this one into eviction or
-    # an OOM kill.
+    # Readiness, separate from liveness (#429). Like /healthz, async and
+    # I/O-free, so a starved event loop also fails it. Out of the Service while
+    # spill disk or memory is short (#428), so new queries go to other replicas
+    # instead of pushing this one into eviction or an OOM kill.
     if SPILL_GUARD.under_pressure():
         reason = SPILL_GUARD.pressure_reason() or "under pressure"
         return JSONResponse({"ok": False, "reason": reason}, status_code=503)
-    if _READY_WITHOUT_CATALOG or _stac_catalog_loaded():
-        return JSONResponse({"ok": True, "version": APP_VERSION})
-    return JSONResponse({"ok": False, "reason": "STAC catalog not loaded"}, status_code=503)
+    return JSONResponse({"ok": True, "version": APP_VERSION})
+
+
+def _public_catalog_url() -> str:
+    """The catalog URL clients should use: STAC_PUBLIC_CATALOG_URL, else STAC_CATALOG_URL."""
+    return (os.environ.get("STAC_PUBLIC_CATALOG_URL", "").strip()
+            or os.environ.get("STAC_CATALOG_URL", "").strip())
 
 
 async def _version(_request):
@@ -1433,63 +1344,20 @@ async def _version(_request):
     # tiles, with no MCP session and no markdown parsing. That closes the failure
     # mode where a client's hardcoded `catalog` URL is down while this head is
     # healthy on a mirror. Only *public* URLs go here — this route is deliberately
-    # auth-exempt, so the internal STAC_CATALOG_URL stays out of it (it is reported
-    # only in browse_stac_catalog, inside an authenticated session).
+    # auth-exempt. The server no longer reads the catalog (#528); the URL is a
+    # pointer from the deployment's config, for clients such as wyoming's proxy.
     return JSONResponse({
         "version": APP_VERSION,
         "git_sha": GIT_SHA,
-        "stac_catalog_url": _stac_public_catalog_url(),
+        "stac_catalog_url": _public_catalog_url(),
         "public_base_url": _public_base_url(),
         **({"guidance_dropped": GUIDANCE_DROPPED} if GUIDANCE_DROPPED else {}),
     })
 
 # -------------------------------------------------------------------------
-# 10. SERVER START
+# 8. SERVER START
 # -------------------------------------------------------------------------
-def _enforce_stac_startup_gate() -> bool:
-    """Decide whether to boot when the STAC root catalog failed to load.
-
-    Normally, an unreachable root catalog means serving would give clients a
-    useless empty catalog, so we exit non-zero and let Kubernetes restart the
-    pod for a fresh attempt against whatever S3 looks like now. (Child failures —
-    a partial catalog — are fine: the resilience design serves what loaded and
-    records the rest in STAC_LOAD_ERRORS for list_datasets's footer.)
-
-    But during a sustained Ceph outage that fail-fast prevents the server from
-    booting at all — which defeats the source.coop mirror fallback (#260): a
-    running process can still serve known datasets and resolve source.coop STAC
-    entries directly. STAC_ALLOW_DEGRADED_START=true opts into booting anyway
-    with an empty catalog. Returns True if starting degraded, False if the root
-    loaded fine. Default behavior (flag unset) is unchanged: exit(1).
-    """
-    if "__root__" not in STAC_LOAD_ERRORS:
-        return False
-    reason = STAC_LOAD_ERRORS["__root__"]
-    allow_degraded = os.environ.get("STAC_ALLOW_DEGRADED_START", "").strip().lower() in (
-        "1", "true", "yes", "on",
-    )
-    if allow_degraded:
-        print(
-            "⚠️ STAC root catalog unreachable at startup — booting in DEGRADED mode "
-            "(STAC_ALLOW_DEGRADED_START set). Discovery (browse_stac_catalog / "
-            "list_datasets) will be empty until the catalog is reachable; clients can "
-            "still query known datasets and pass source.coop STAC entries directly. "
-            f"Reason: {reason}",
-            file=sys.stderr,
-        )
-        return True
-    print(
-        "💀 STAC root catalog unreachable at startup — exiting so k8s can restart "
-        "and retry. Set STAC_ALLOW_DEGRADED_START=true to boot anyway (e.g. to serve "
-        f"the source.coop mirror during a Ceph outage). Reason: {reason}",
-        file=sys.stderr,
-    )
-    sys.exit(1)
-
-
 if __name__ == "__main__":
-    _enforce_stac_startup_gate()
-
     app = mcp.streamable_http_app()
     app.router.redirect_slashes = False
     mount_tiles(app)
@@ -1513,28 +1381,6 @@ if __name__ == "__main__":
     print(_describe_transport_security(_TRANSPORT_SECURITY), file=sys.stderr)
 
     print("🚀 Starting DuckDB MCP Server...", file=sys.stderr)
-    print(f"📂 STAC catalog: {STAC_CATALOG_URL}", file=sys.stderr)
-    if _stac_public_catalog_url() != STAC_CATALOG_URL:
-        # Worth a boot line: if this is wrong or unset, clients are told to fetch a
-        # catalog they can't reach (#346).
-        print(f"🌐 STAC catalog (advertised to clients): {_stac_public_catalog_url()}", file=sys.stderr)
-    print(f"📊 Datasets loaded: {len(STAC_DATASETS)}", file=sys.stderr)
-    # Catalog scope is deployment config now (#420), so say what this deployment
-    # resolved it to — an operator reading only the tool schemas can no longer
-    # tell, and a private catalog silently fetched without its token looks
-    # exactly like an empty one.
-    if _stac_default_catalog_token():
-        print("🔑 STAC catalog token configured (STAC_CATALOG_TOKEN)", file=sys.stderr)
-    print(
-        f"🧭 Catalog discovery: {'enabled' if DISCOVERY_ENABLED else 'disabled'} "
-        f"(browse_stac_catalog / catalog://list "
-        f"{'registered' if DISCOVERY_ENABLED else 'not registered — STAC_DISCOVERY=0'})",
-        file=sys.stderr,
-    )
-    # Keep every replica's STAC snapshot fresh without a rollout — a publish to S3
-    # (new dataset OR new asset on an existing collection) becomes visible within
-    # one refresh interval instead of the pod's lifetime (#337).
-    _stac_start_periodic_refresh()
     SPILL_GUARD.start()
     _start_memory_log()
     uvicorn.run(

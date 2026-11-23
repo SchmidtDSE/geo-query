@@ -80,30 +80,6 @@ class TestRewriteHref:
         )
 
 
-class TestMetadataHref:
-    def test_nrp_reroutes_to_internal(self, monkeypatch):
-        monkeypatch.delenv("S3_SOURCES", raising=False)
-        monkeypatch.delenv("S3_ENDPOINT_URL", raising=False)
-        assert (
-            s3config.metadata_href("https://s3-west.nrp-nautilus.io/public-data/stac/catalog.json")
-            == "http://rook-ceph-rgw-nautiluss3.rook/public-data/stac/catalog.json"
-        )
-
-    def test_s3_endpoint_url_env_honored(self, monkeypatch):
-        monkeypatch.delenv("S3_SOURCES", raising=False)
-        monkeypatch.setenv("S3_ENDPOINT_URL", "https://s3-west.nrp-nautilus.io")
-        assert s3config.metadata_href(
-            "https://s3-west.nrp-nautilus.io/public-data/stac/catalog.json"
-        ) == "https://s3-west.nrp-nautilus.io/public-data/stac/catalog.json"
-
-    def test_source_coop_metadata_not_rerouted(self, monkeypatch):
-        """data.source.coop serves STAC JSON fine over HTTPS — only the DATA
-        path needs the bucket-form rewrite, so metadata_href must not touch it."""
-        monkeypatch.delenv("S3_SOURCES", raising=False)
-        href = "https://data.source.coop/cboettig/carbon/collection.json"
-        assert s3config.metadata_href(href) == href
-
-
 class TestSourceSecretSql:
     def test_source_coop_secret_generated(self, monkeypatch):
         monkeypatch.delenv("S3_SOURCES", raising=False)
@@ -137,34 +113,6 @@ class TestSourceSecretSql:
         )
         stmt = [s for s in s3config.source_secret_sql() if "e.example" in s][0]
         assert "s3://a''b" in stmt
-
-
-class TestRouteHint:
-    def test_path_style(self):
-        hint = s3config.route_hint("https://minio.other.edu/public-x/hex/h0=*/d.parquet")
-        assert hint == {
-            "path": "s3://public-x/hex/h0=*/d.parquet",
-            "endpoint": "minio.other.edu",
-            "scope": "s3://public-x",
-        }
-
-    def test_vhost_aws(self):
-        hint = s3config.route_hint("https://mybucket.s3.us-west-2.amazonaws.com/data/x.parquet")
-        assert hint["path"] == "s3://mybucket/data/x.parquet"
-        assert hint["endpoint"] == "s3.us-west-2.amazonaws.com"
-        assert hint["scope"] == "s3://mybucket"
-
-    def test_no_key_returns_none(self):
-        """A bare https file at host root has no bucket/key split to derive."""
-        assert s3config.route_hint("https://example.com/other.parquet") is None
-
-    def test_non_https_returns_none(self):
-        assert s3config.route_hint("s3://already/fine.parquet") is None
-        assert s3config.route_hint("/local/path.parquet") is None
-
-    def test_directory_key_preserves_trailing_slash(self):
-        hint = s3config.route_hint("https://minio.other.edu/mirror-x/data/")
-        assert hint["path"] == "s3://mirror-x/data/"
 
 
 # --- s3_endpoint allow-list -------------------------------------------------

@@ -1,8 +1,9 @@
 """Deployment-level S3 configuration: the default backend and the source registry.
 
-Single source of truth (#268/#271/#264) for everything that maps STAC hrefs to
-DuckDB S3 access, consumed by the query engine (server.get_isolated_db), the
-tile subsystem (tiles.db.build_tile_connection), and the STAC renderer (stac.py):
+Single source of truth (#268/#271/#264) for everything that maps dataset hrefs to
+DuckDB S3 access, consumed by the query engine (server.get_isolated_db and the
+https→s3 rewrite of caller SQL) and the tile subsystem
+(tiles.db.build_tile_connection):
 
 - **Default backend** — one env surface (S3_DEFAULT_ENDPOINT / S3_DEFAULT_URL_STYLE /
   S3_DEFAULT_USE_SSL) for the unscoped `s3` secret, so repointing a deployment at
@@ -13,13 +14,11 @@ tile subsystem (tiles.db.build_tile_connection), and the STAC renderer (stac.py)
     name                 registry key; sanitized into the DuckDB secret name
     https_prefix         hrefs starting with this are rewritten to s3_prefix
     s3_prefix            replacement prefix (s3:// form DuckDB can glob)
-    metadata_url_prefix  when set, STAC-JSON fetches for https_prefix are rerouted
-                         here instead (e.g. the NRP in-cluster fast path)
     secret               when set, a prefix-scoped DuckDB secret is created on
                          every connection: {endpoint, scope, region?, url_style?,
                          use_ssl?, key_id?, secret?}
-  Built-ins cover the NRP Ceph endpoint (rewrite + in-cluster metadata reroute;
-  no secret of its own — its paths route via the default `s3` secret) and the
+  Built-ins cover the NRP Ceph endpoint (rewrite only; no secret of its own —
+  its paths route via the default `s3` secret) and the
   anonymous source.coop mirror (gateway rewrite + scoped `source_coop` secret).
 
   Deployments extend/override via the S3_SOURCES env var: a JSON list of entries,
@@ -29,12 +28,6 @@ tile subsystem (tiles.db.build_tile_connection), and the STAC renderer (stac.py)
                   "s3_prefix": "s3://",
                   "secret": {"endpoint": "minio.example.edu",
                              "scope": "s3://mirror-"}}]'
-
-- **Route hints** — for hrefs on hosts NOT in the registry, `route_hint()` derives
-  the (s3 path, endpoint, scope) a caller can pass per-request to `query`
-  (s3_endpoint/s3_scope), so "carry the links" works for endpoints nobody
-  pre-configured. Derivation, never a rewrite: unknown hrefs still pass through
-  unchanged; the hint is surfaced alongside them by the STAC tools.
 
 The fully STAC-native end state carries endpoint/routing on the asset itself
 (storage extension); this registry is the server-side stand-in until then.
@@ -91,24 +84,17 @@ def default_s3_secret_sql(name: str = "s3") -> str:
 # Source registry
 # -------------------------------------------------------------------------
 def _builtin_sources() -> list[dict]:
-    # Computed per call (not module-level) so S3_ENDPOINT_URL is honored when it
-    # changes between calls — e.g. running stac.py locally against the external
-    # endpoint, or monkeypatching in tests.
+    # Computed per call (not module-level), so env changes and test monkeypatching
+    # take effect.
     return [
         {
             # Primary NRP Ceph. The STAC catalog publishes external SSL hrefs;
             # rewriting strips the host so DuckDB can glob, and paths then route
             # via the deployment-default `s3` secret (internal endpoint in-cluster)
-            # — which is why this entry has no secret of its own. Metadata (STAC
-            # JSON) fetches are invisibly rerouted to the in-cluster endpoint for
-            # speed; override with S3_ENDPOINT_URL outside the cluster.
+            # — which is why this entry has no secret of its own.
             "name": "nrp_ceph",
             "https_prefix": "https://s3-west.nrp-nautilus.io/",
             "s3_prefix": "s3://",
-            "metadata_url_prefix": (
-                os.environ.get("S3_ENDPOINT_URL", "http://rook-ceph-rgw-nautiluss3.rook").rstrip("/")
-                + "/"
-            ),
         },
         {
             # Anonymous source.coop mirror (#260). STAC entries publish assets
@@ -186,52 +172,8 @@ def rewrite_sql_hrefs(sql: str) -> tuple[str, int]:
     return sql, total
 
 
-def metadata_href(href: str) -> str:
-    """Registry-driven reroute for STAC-metadata (JSON) fetches.
-
-    Distinct from rewrite_href: data reads want s3:// paths for DuckDB, while
-    metadata reads stay HTTP — just pointed at a faster/internal host when the
-    registry knows one (NRP in-cluster fast path).
-    """
-    for src in get_sources():
-        hp, mp = src.get("https_prefix"), src.get("metadata_url_prefix")
-        if hp and mp and href.startswith(hp):
-            return mp + href[len(hp):]
-    return href
-
-
 # Virtual-hosted AWS S3: BUCKET.s3.amazonaws.com or BUCKET.s3.REGION.amazonaws.com.
 _VHOST_S3 = re.compile(r"^(?P<bucket>[^/]+?)\.(?P<endpoint>s3(?:[.-][a-z0-9-]+)?\.amazonaws\.com)$")
-
-
-def route_hint(href: str) -> dict | None:
-    """Derive per-request routing for an https href on a host outside the registry.
-
-    Assumes path-style S3 (https://HOST/BUCKET/KEY → s3://BUCKET/KEY @ HOST),
-    plus the documented virtual-hosted AWS form. Returns
-    {"path", "endpoint", "scope"} — the s3:// path and the s3_endpoint/s3_scope
-    a caller passes to `query` — or None when the href isn't https or has no
-    bucket/key to split. A hint, not a rewrite: callers surface it alongside the
-    original href, they don't substitute silently.
-    """
-    m = re.match(r"^https://([^/]+)/(.+)$", href)
-    if not m:
-        return None
-    host, rest = m.groups()
-    vhost = _VHOST_S3.match(host)
-    if vhost:
-        bucket, key = vhost.group("bucket"), rest
-        endpoint = vhost.group("endpoint")
-    else:
-        bucket, _, key = rest.partition("/")
-        endpoint = host
-    if not bucket or not key:
-        return None
-    return {
-        "path": f"s3://{bucket}/{key}",
-        "endpoint": endpoint,
-        "scope": f"s3://{bucket}",
-    }
 
 
 # Hosts a caller may name as `s3_endpoint` on the `query` tool. The endpoint

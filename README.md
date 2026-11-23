@@ -156,7 +156,6 @@ We have a fully-hosted version
 ### Core Components
 
 - **server.py** - Main MCP server with FastMCP framework
-- **stac.py** - STAC catalog integration for dynamic dataset discovery
 
 ### Runtime Prompt Files
 
@@ -230,10 +229,7 @@ The deployment:
   newest query if the pod passes 95% of its limit (`MEMORY_HARD_FRACTION`) and
   is still rising. `MEMORY_GUARD=0` turns this off.
 - Includes `/healthz` (liveness) and `/readyz` (readiness) probes for safe
-  rollouts. `/readyz` also fails while the pod has no STAC catalog, so a pod
-  that booted with `STAC_ALLOW_DEGRADED_START` leaves the Service until its
-  catalog loads; set `STAC_READY_WITHOUT_CATALOG=true` to keep such a pod in
-  service.
+  rollouts.
 
 ### Releases and production rollouts
 
@@ -262,16 +258,9 @@ If every pod's imageID matches the pinned digest, prod is current and consistent
 
 ### Tools
 
-- `browse_stac_catalog(catalog?)` - List available datasets from the deployment's STAC catalog (registered only when a deployment sets `STAC_DISCOVERY=1`; off by default)
-- `get_stac_details(dataset_id, collection?)` - Get S3 paths and schema for a dataset
 - `query(sql_query, s3_endpoint?, s3_scope?, s3_region?, s3_url_style?)` - Execute DuckDB SQL against S3 parquet files. It also accepts `s3_key` and `s3_secret` from a server-side proxy, but does not offer them to the model (see Private S3 data).
 
-### Resources
-
-*NOTE*: Some MCP clients, like in VSCode, do not recognize "resources" and "prompts".  Newer clients (Claude code, Continue.dev, Antigravity do) 
-
-- `catalog://list` - List all available datasets
-- `catalog://{name}` - Get detailed schema for a specific dataset
+Dataset discovery is not part of this server (#528). Clients find datasets, paths and column schemas with their own STAC tools (glen answers `get_schema` and `get_stac_details` in the browser) or from the [public STAC catalog](https://s3-west.nrp-nautilus.io/public-data/stac/catalog.json). `query` and `register_hex_tiles` accept the catalog's published https paths as-is and read them as `s3://`.
 
 ### Prompts
 
@@ -581,6 +570,6 @@ Contributions welcome! Key areas:
 
 For issues and questions:
 - GitHub Issues: [SchmidtDSE/geo-query](https://github.com/SchmidtDSE/geo-query)
-- Dataset questions: Use the `browse_stac_catalog` tool or browse the [public STAC catalog](https://s3-west.nrp-nautilus.io/public-data/stac/catalog.json)
+- Dataset questions: browse the [public STAC catalog](https://s3-west.nrp-nautilus.io/public-data/stac/catalog.json)
 
 
