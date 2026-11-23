@@ -7,13 +7,15 @@ When a dataset's STAC metadata lists a GeoParquet file and a `/hex/` asset, the 
 If you browse the catalog and only find a GeoParquet with no hex equivalent, **say so** rather than falling back to spatial predicates. A missing hex version is a data pipeline gap (not something to work around silently).
 
 ## The H3 Data Model
-<!-- prov: issue=#92,#93 models=unrecorded added=2026-04-21 cell=background tier=core -->
+<!-- prov: issue=#92,#93,#549 models=unrecorded added=2026-04-21 cell=background tier=core -->
 
 All datasets are already stored as H3 hex parquet in the STAC catalog — no conversion is needed. Understanding the origin of each dataset explains the structure you will encounter when you query it.
 
 **Vector datasets** (protected areas, districts, parcels) were built by tiling each source polygon into the H3 cells it covers — one row per (feature, hex-cell) pair. A single protected area covering 500 cells has 500 rows, all sharing the same `_cng_fid` and identical feature-level attributes. `_cng_fid` is the universal feature identifier added by CNG processing and is present on all vector hex datasets.
 
-**Raster datasets** (land cover, elevation, biomass) were built by assigning each pixel to its H3 cell — one row per pixel, with no aggregation during processing. These datasets have no `_cng_fid`. When the raster resolution is finer than the H3 resolution, many pixels share the same hex cell, producing multiple rows per hex with different values.
+Some vector datasets also carry `cover_frac`, the share of each cell's area inside the feature.
+
+**Raster datasets** (land cover, carbon, population, elevation) hold one value per H3 cell at their native resolution, reduced when the asset was built; the STAC description names the reducer. These datasets have no `_cng_fid`. Categorical rasters may also ship a `*-hex-fractions` asset with one row per class per cell (Problem 3).
 
 All spatial operations are hex joins — two datasets overlap wherever their hex IDs match.
 
@@ -27,11 +29,11 @@ All spatial operations are hex joins — two datasets overlap wherever their hex
 - Always check the dataset schema for available resolution columns before writing a join
 
 ## Key Facts
-<!-- prov: issue=#35 models=unrecorded added=2026-05-28 cell=background tier=core -->
+<!-- prov: issue=#35,#549 models=unrecorded added=2026-05-28 cell=background tier=core -->
 
 - Always report **areas** (km², acres, etc.), never raw hex counts
 - For nationwide/global aggregates over millions of cells, `APPROX_COUNT_DISTINCT(hN)` is fast and accurate to ~1–2%. For per-group breakdowns (per-state, per-class, per-county, per-district) where each group has fewer than ~1M distinct cells, use `COUNT(DISTINCT hN)` instead — DuckDB's HLL error grows steeply at smaller cardinalities and compounds inside `GROUP BY` (real-world per-group errors of +30% have been observed). Total scan size matters less than per-group cell count.
-- **Never SUM a feature's area or length column over hex rows** (ACRES, GIS_Acres, area_ha, `length_*`): the source feature's total repeats on every cell it covers, so `SUM(ACRES)` is wrong by 10³–10⁶×. For a feature's own total, sum the column over `DISTINCT _cng_fid` (optimization rule 8). For the area covered by overlapping features, count distinct cells × cell area, which counts each piece of ground once.
+- **Never SUM a feature's area or length column over hex rows** (ACRES, GIS_Acres, area_ha, `length_*`): the source feature's total repeats on every cell it covers, so `SUM(ACRES)` is wrong by 10³–10⁶×. For a feature's own total, sum the column over `DISTINCT _cng_fid` (optimization rule 8). For the area covered by overlapping features, count each cell once: weight it by `cover_frac` where the dataset has one (Problem 2), otherwise count distinct cells × cell area.
 
 ## Area Conversion
 <!-- prov: issue=#163,#259,#288 models=gemma,qwen3,qwen3-small added=2026-07-07 cell=units-acres,cell-count-units,carbon-cell-is-total tier=core -->
@@ -293,16 +295,9 @@ Check the dataset's STAC description — it will note when DISTINCT is required.
 ---
 
 ### Problem 3 — Raster pixels (raster-derived datasets)
-<!-- prov: issue=#3,#309,#355,#367 models=deepseek-v4-flash-0731,glm-5.2,kimi-k3 added=2026-08-12 cell=cwhr13-use-fractional-hex-not-mode,fractional-overlay-weight-by-cell-area,h3-presence-mean-not-promote-res8 tier=core -->
+<!-- prov: issue=#3,#309,#355,#367,#549 models=deepseek-v4-flash-0731,glm-5.2,kimi-k3 added=2026-08-12 cell=cwhr13-use-fractional-hex-not-mode,fractional-overlay-weight-by-cell-area,h3-presence-mean-not-promote-res8 tier=core -->
 
-Raster datasets are converted to hex by assigning each **pixel** its H3 cell — no aggregation is applied during processing. When the raster resolution is finer than the H3 resolution, many pixels map to the same hex cell, producing many rows with the same `h8`, all with different values.
-
-- At H3 resolution 8 (edge ~531m) with 30m pixels: ~300 pixel rows per hex
-- At H3 resolution 8 with 1km pixels: ~1 row per hex (ratio near 1)
-
-**DISTINCT does not help here** — you genuinely need to aggregate the values.
-
-**Always GROUP BY and aggregate raster datasets.**
+Raster hex assets hold one value per cell at their native resolution. To report at a coarser resolution, GROUP BY the parent column with the reducer the STAC description names. Totals such as carbon or population are per-cell sums: use SUM, never AVG.
 ```sql
 -- Continuous values (carbon, biomass, elevation) → SUM or AVG
 SELECT h8, h0, SUM(value) AS total
@@ -315,8 +310,6 @@ FROM read_parquet('<mode hex>')
 GROUP BY h8, h0
 ```
 
-Check the dataset's STAC description — it notes when aggregation is required and which method (SUM, AVG, or MODE) to use.
-
 For categorical **area or composition** ("how much of class X", "percent of the region that is X"), MODE is the wrong tool: a cell holds several classes and MODE keeps only the winner, biasing per-class areas in both directions. Categorical layers increasingly ship a companion **`*-hex-fractions`** asset — a long schema with one `(class, frac)` row per class present in a cell, where `frac` is that class's fractional coverage of the cell, in (0,1]. When it exists (check `get_schema`), use it and weight area by `frac`:
 
 ```sql
@@ -326,7 +319,7 @@ WHERE class <> <nodata>          -- exclude the no-data class; get its code from
 GROUP BY class;
 ```
 
-`get_schema` names the fractions asset and the no-data code. Per cell `SUM(frac) <= 1`; the shortfall is outside-raster/quantization, so do not treat the layer as covering 100% of a cell.
+`get_schema` names the fractions asset and the no-data code.
 
 **Overlaying a feature with a partial-coverage layer — the weight is fixed by the feature's geometry, and it is the same weight at every resolution.** *(Skip unless you are intersecting one layer with another that only partly covers its cells — e.g. "what percent of each habitat class is conserved".)* Reduce the overlay layer to one coverage fraction per cell, then weight each of the feature's cells by:
 

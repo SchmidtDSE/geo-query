@@ -72,8 +72,8 @@ GEOMORPH = f"s3://public-high-seas/seafloor-geomorphology/hex/h0={_H0}/data_0.pa
 REGIONS = f"s3://public-overturemaps/2026-02-18.0/regions/hex/h0={_H0_PARKS}/data_0.parquet"  # region ('US-CA'), h8, h0
 PADUS = f"s3://public-padus/padus-4-1/combined/hex/h0={_H0_PARKS}/data_0.parquet"  # Des_Tp ('NP'), h8, h0
 # CGLS-LC100 fractions — a measure and a sentinel-coded class in ONE table (#402).
-# The 0/80/200 the no-data example excludes are this dataset's real sentinels
-# (unknown / permanent water / open sea), which is what it was written against.
+# Class 0 is this dataset's fill value, the one the no-data example excludes.
+# 80 (permanent water) and 200 (open sea) are real classes (#549).
 LC_FRAC = f"s3://public-land-cover/cgls-lc100-2019/hex-fractions/h0={_H0}/data_0.parquet"  # lc_class, frac, h5..h9, h0
 
 EXECUTABLE = {
@@ -167,9 +167,9 @@ EXECUTABLE = {
     # no-data before SUM/AVG (#402). Was deferred as "dataset not yet mapped": no
     #   dataset in the catalog has a column named `value`, so the block could never
     #   bind as written. `<value>` is now a placeholder like the `<hex>` beside it,
-    #   and it binds against the CGLS-LC100 fractions, whose `lc_class` sentinels
-    #   0/80/200 are the ones the block already cited.
-    "query-optimization.md:33fe4b5802": {"<hex>": LC_FRAC, "<value>": "frac"},
+    #   and it binds against the CGLS-LC100 fractions, whose fill class 0 is the
+    #   one the block cites.
+    "query-optimization.md:87a8c34b38": {"<hex>": LC_FRAC, "<value>": "frac"},
     # [19] rows-per-hex profiling on a single partition
     "h3-guide.md:2aab9a5de8": {"<STAC_HEX_PATH_SINGLE_PARTITION>": ECO8},
     # query-setup.md — the required SET/LOAD preamble (no S3); validates it runs

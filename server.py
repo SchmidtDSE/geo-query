@@ -216,17 +216,18 @@ TOOL_INJECTED_CONTEXT = f"""
 1. **NO TABLES EXIST:** The database is empty. You CANNOT write `FROM table_name`.
 2. **USE PARQUET PATHS:** You MUST use `FROM read_parquet('s3://...')` for ALL queries.
 3. **DISCOVER PATHS — TRUST STAC PATHS EXACTLY:** Take each path from the dataset's STAC metadata (your catalog tool) and use it **verbatim**. NEVER guess, modify, or "fix" a path. Both path depth and glob pattern vary across datasets — there is no single convention. Examples:
-   - `read_parquet('s3://public-wdpa/wdpa-december-2025/hex/h0=*/data_0.parquet')` — versioned collection, partition glob
+   - `read_parquet('s3://public-wdpa/wdpa/hex/h0=*/data_0.parquet')` — partition glob
    - `read_parquet('s3://public-padus/padus-4-1/fee/hex/h0=*/data_0.parquet')` — nested path, partition glob
+   - `read_parquet('s3://public-coral-reef-watch/crw-5km-annual/sst-mean/hex/h0=*/*.parquet')` — any file in each partition
 
-   Both are correct. Copy-paste the path from the catalog. In SQL examples below, `<STAC_HEX_PATH>` means "insert the exact path from the dataset's STAC metadata here."
+   All are correct. Copy-paste the path from the catalog. In SQL examples below, `<STAC_HEX_PATH>` means "insert the exact path from the dataset's STAC metadata here."
 4. **MASK BEFORE AGGREGATE (DPP rule).** When joining a small hex mask
    (e.g. state, district, county, protected-areas hexes) against a globally
    `h0`-partitioned hex dataset (land cover, climate, biomass — anything
    under `hex/h0=*/`), the `SEMI JOIN` against the mask MUST appear directly
    on the raw `read_parquet(...)` BEFORE `GROUP BY`. Aggregating the global
-   side first scans every `h0` partition and will hit the 300-second MCP
-   timeout. DuckDB dynamic partition pruning cannot push filters through
+   side first scans every `h0` partition and runs into the query time
+   limit. DuckDB dynamic partition pruning cannot push filters through
    `HASH_GROUP_BY`.
    ```sql
    SELECT a.h8, MODE(a.lc_class) AS dominant
@@ -926,7 +927,8 @@ def register_hex_tiles(
        GROUP BY a.h<H>;
 
        Call agg="AVG" (or the matching op). The SEMI JOIN must sit on the
-       raw read_parquet(), upstream of GROUP BY — see h3-guide.md Problem 2.
+       raw read_parquet(), upstream of GROUP BY — see CRITICAL rule 4 in
+       the `query` description.
 
     3. Distinct-count per hex (e.g. species richness — distinct species
        per cell, NOT occurrence count):
