@@ -45,6 +45,9 @@ data:
       timeout server 20m
       timeout queue 20m
       timeout http-keep-alive 60s
+      # Drop a queued request whose client has gone, instead of sending it to
+      # a pod later to run for nobody (#540).
+      option abortonclose
 
     resolvers kube
       parse-resolv-conf
@@ -88,7 +91,7 @@ spec:
         app: bench-mcp-proxy
       annotations:
         # Bump to roll the proxy after changing the ConfigMap.
-        bench-mcp-proxy/config-rev: "1"
+        bench-mcp-proxy/config-rev: "2"
     spec:
       automountServiceAccountToken: false
       securityContext:
