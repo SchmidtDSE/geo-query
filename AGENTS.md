@@ -256,7 +256,8 @@ stale `true`, sitting on v0.8.8/0.8.9-era digests alongside six converged v0.8.1
 
 Check what actually serves, not the raw pod list:
 - **Service endpoints are authoritative** — `kubectl -n biodiversity get endpoints mcp-server-duckdb`
-  (prod) or `dev-mcp-server-duckdb` (dev) lists only the pods receiving traffic. Orphans are
+  (prod) or `dev-duckdb-mcp-pods` (dev; `dev-mcp-server-duckdb` now points at the proxy in
+  `k8s/dev-proxy.yaml`) lists only the pods receiving traffic. Orphans are
   excluded because their **pod-level `Ready` condition is `False`**, even when the container's
   own `ready` is a stale `true`. So the real check is: **every endpoint-backing pod converges
   on the manifest digest.**
