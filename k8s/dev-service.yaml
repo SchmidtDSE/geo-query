@@ -1,3 +1,5 @@
+# The Ingress sends dev traffic here, and this Service sends it to the HAProxy in
+# dev-proxy.yaml, which gives each query to an idle dev pod (#551).
 apiVersion: v1
 kind: Service
 metadata:
@@ -5,7 +7,7 @@ metadata:
   namespace: biodiversity
 spec:
   selector:
-    app: dev-duckdb-mcp
+    app: dev-mcp-proxy
   ports:
     - protocol: TCP
       port: 8000
