@@ -120,21 +120,22 @@ WHERE site = 'O'Brien Ranch'    -- parse error
 ```
 
 ## 7. Filter no-data values before SUM / AVG
-<!-- prov: issue=#243,#244 models=gemma,glm-5,kimi added=2026-08-12 cell=sum-amount-safe tier=core -->
+<!-- prov: issue=#243,#244,#549 models=gemma,glm-5,kimi added=2026-08-12 cell=sum-amount-safe tier=core -->
 
 A single `NaN` turns the entire aggregate into `NaN` — one no-data cell poisons a
 whole `SUM` or `AVG`. No-data shows up as literal `NaN`, or as sentinel codes a
-dataset reserves for "no data" (e.g. land-cover classes 0, 80, 200). Exclude both
+dataset reserves for "no data" (e.g. a land-cover fill class 0). Exclude both
 before aggregating:
 
 ```sql
 SELECT SUM(<value>) AS total
 FROM read_parquet('<hex>')
 WHERE <value> IS NOT NULL AND NOT isnan(<value>)
-  AND lc_class NOT IN (0, 80, 200);   -- dataset's no-data sentinels
+  AND lc_class <> 0;   -- the dataset's fill value
 ```
 
-Take the sentinel codes from the dataset's STAC description. A `NaN` total or a
+Take the sentinel codes from the dataset's STAC description, and keep classes it
+names as real (water, open sea) unless the question excludes them. A `NaN` total or a
 total far smaller than expected is the signature of this trap.
 
 ## 8. Total a partial-coverage feature by its own measure, not a hex count
