@@ -78,7 +78,7 @@ context. Search the existing schema response instead. `DESCRIBE` is appropriate
 only for arbitrary parquet files not represented in any STAC collection.
 
 ## 4. Text matching: fuzzy search vs exact keys
-<!-- prov: issue=#209,#220 models=unrecorded added=2026-06-20 cell=feature_type-exact,county-name-filter,program-like-lwcf tier=core -->
+<!-- prov: issue=#209,#220,#528 models=unrecorded added=2026-06-20 cell=feature_type-exact,county-name-filter,program-like-lwcf tier=core -->
 
 DuckDB `LIKE` is case-sensitive by default. For **fuzzy substring search** on a
 free-text label the user typed (site, owner, program names), normalize both
@@ -92,7 +92,7 @@ For an **exact match on a known key** (`sci_name`, `name_en`, a country or
 category code), match the stored case exactly instead of wrapping the column in
 `lower()`. Where the file is sorted or clustered by that key, exact-case lets
 DuckDB skip row groups by their stored min/max stats; `lower()` forces a full
-column scan. Take the spelling from a `get_stac_details` example or a
+column scan. Take the spelling from an example in the STAC metadata or a
 `SELECT DISTINCT` probe:
 
 ```sql

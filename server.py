@@ -205,34 +205,22 @@ EXTRAS_RAW = load_text_file("experimental-extensions.md") if EXTRA_EXTENSIONS el
 # -------------------------------------------------------------------------
 # 3. CONTEXT INJECTION (PROMPT ENGINEERING)
 # -------------------------------------------------------------------------
-# The discovery step is named only where the tool exists. A deployment with
-# STAC_DISCOVERY=0 (#420) does not register `browse_stac_catalog`, and guidance
-# that still told the model to call it would burn a turn on `Unknown tool`.
-# Discovery is off by default, so most deployments get the second form.
-_DISCOVER_STEP = (
-    "Call `browse_stac_catalog` then `get_stac_details`"
-    if _stac_discovery_enabled()
-    else "Call `get_stac_details`"
-)
-_QUERY_DISCOVER_STEPS = (
-    """1. Call `browse_stac_catalog` to see all available dataset IDs and titles.
-2. Call `get_stac_details` with the relevant dataset ID to get exact S3 paths and column schemas.
-3. Use ONLY paths returned by those tools — never guess or hardcode any S3 URLs."""
-    if _stac_discovery_enabled()
-    else """1. Call `get_stac_details` with the relevant dataset ID to get exact S3 paths and column schemas.
-2. Use ONLY paths returned by that tool — never guess or hardcode any S3 URLs."""
-)
+# Dataset discovery belongs to the client's catalog tools, not this server
+# (#528). glen answers `get_schema` and `get_stac_details` in the browser, so the
+# guidance names those as examples without promising the server provides them.
+_QUERY_DISCOVER_STEPS = """1. Get the dataset's read_parquet() paths and column names from its STAC metadata (your catalog tool, such as `get_schema` or `get_stac_details`).
+2. Use ONLY those paths — never guess or hardcode any S3 URLs. Published https:// paths work as-is."""
 
 TOOL_INJECTED_CONTEXT = f"""
 ---
 ### ⚠️ CRITICAL SQL RULES (MUST FOLLOW)
 1. **NO TABLES EXIST:** The database is empty. You CANNOT write `FROM table_name`.
 2. **USE PARQUET PATHS:** You MUST use `FROM read_parquet('s3://...')` for ALL queries.
-3. **DISCOVER PATHS — TRUST STAC PATHS EXACTLY:** {_DISCOVER_STEP} to get exact S3 paths — then use them **verbatim**. NEVER guess, modify, or "fix" a path. Both path depth and glob pattern vary across datasets — there is no single convention. Examples:
+3. **DISCOVER PATHS — TRUST STAC PATHS EXACTLY:** Take each path from the dataset's STAC metadata (your catalog tool) and use it **verbatim**. NEVER guess, modify, or "fix" a path. Both path depth and glob pattern vary across datasets — there is no single convention. Examples:
    - `read_parquet('s3://public-wdpa/wdpa-december-2025/hex/h0=*/data_0.parquet')` — versioned collection, partition glob
    - `read_parquet('s3://public-padus/padus-4-1/fee/hex/h0=*/data_0.parquet')` — nested path, partition glob
 
-   Both are correct. Copy-paste the path from get_stac_details. In SQL examples below, `<STAC_HEX_PATH>` means "insert the exact path from get_stac_details here."
+   Both are correct. Copy-paste the path from the catalog. In SQL examples below, `<STAC_HEX_PATH>` means "insert the exact path from the dataset's STAC metadata here."
 4. **MASK BEFORE AGGREGATE (DPP rule).** When joining a small hex mask
    (e.g. state, district, county, protected-areas hexes) against a globally
    `h0`-partitioned hex dataset (land cover, climate, biomass — anything
@@ -1001,7 +989,7 @@ def register_hex_tiles(
         map.addLayer({id: ..., source: id, ...result.layer});
 
     SQL patterns — pick the one matching the ask; paste exact paths from
-    get_stac_details. `<H>` is the H3 resolution, usually 8.
+    the dataset's STAC metadata. `<H>` is the H3 resolution, usually 8.
 
     1. Density (count features per hex):
 

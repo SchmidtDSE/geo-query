@@ -1,8 +1,8 @@
 # H3 Geospatial Indexing
-<!-- prov: issue=#49,#522 models=minimax-m2,deepseek-v4-flash,mimo-v2.6-flash,glm-5.3-flash added=2026-11-20 cell=bosl-coral-notake-share,orig-ecoregions-17pct tier=core -->
+<!-- prov: issue=#49,#522,#528 models=minimax-m2,deepseek-v4-flash,mimo-v2.6-flash,glm-5.3-flash added=2026-11-20 cell=bosl-coral-notake-share,orig-ecoregions-17pct tier=core -->
 
 **Always use H3 hex datasets for filtering and joining — never spatial predicates on GeoParquet.**
-When `get_stac_details` lists a GeoParquet file and a `/hex/` asset, the GeoParquet is for feature attributes (names, ids, measured columns); every spatial step (overlap, containment, coverage share, area, distance) uses the `/hex/` asset. Never use `ST_Within`, `ST_Intersects`, `ST_Contains`, or similar predicates to filter or join large datasets — on these global files they run for hours, cannot be stopped, and a fast test on a few rows does not predict the full query. (Only exception: clipping line mileage to an AOI boundary — see Problem 4. It never applies to polygons, areas or distances.)
+When a dataset's STAC metadata lists a GeoParquet file and a `/hex/` asset, the GeoParquet is for feature attributes (names, ids, measured columns); every spatial step (overlap, containment, coverage share, area, distance) uses the `/hex/` asset. Never use `ST_Within`, `ST_Intersects`, `ST_Contains`, or similar predicates to filter or join large datasets — on these global files they run for hours, cannot be stopped, and a fast test on a few rows does not predict the full query. (Only exception: clipping line mileage to an AOI boundary — see Problem 4. It never applies to polygons, areas or distances.)
 
 If you browse the catalog and only find a GeoParquet with no hex equivalent, **say so** rather than falling back to spatial predicates. A missing hex version is a data pipeline gap (not something to work around silently).
 
@@ -194,11 +194,11 @@ When one side lacks h0, omit it from that side. Prefer hex-partitioned variants 
 Some datasets carry NULL in their finer pre-computed columns for very large features (e.g. IUCN species ranges fill `h8` only for small ranges; larger ranges stop at `h6` or `h5`). Use each feature's finest cell: join the rows that have `h8` on `h8`, the rows with NULL `h8` but a value in `h6` on `h3_cell_to_parent(other.h8, 6) = h6`, and so on down to the coarsest column. Joining every row on its coarsest column credits a whole parent cell to a feature that touches one child, and overcounts coverage. For a dataset that has only the coarse column, see *Feature coarser than the overlay layer* under Problem 3.
 
 ## Subsetting a dataset to a region (state, county, district)
-<!-- prov: issue=#322,#324,#325 models=qwen,nimbus added=2026-07-15 cell=h0-not-a-boundary,region-subset-finest-shared-res,mask-to-state-not-unit-set tier=core -->
+<!-- prov: issue=#322,#324,#325,#528 models=qwen,nimbus added=2026-07-15 cell=h0-not-a-boundary,region-subset-finest-shared-res,mask-to-state-not-unit-set tier=core -->
 
 **`h0` is the res-0 partition key — a coarse *storage* key, never a spatial or boundary filter.** Each res-0 base cell spans ~4.35 **million** km² (larger than any US state), so `WHERE h0 = …` or `WHERE h0 IN (…)` selects whole base cells, not the region. Florida sits inside a single base cell, so `WHERE h0 = <fl_cell>` renders the entire continental US; California spans two base cells, so `WHERE h0 IN (<ca_cell_1>, <ca_cell_2>)` renders both, far larger than the state. Resolving a region to its base cells (`SELECT DISTINCT h0 … WHERE STUSPS='CA'`) and filtering the value dataset by that `h0` set **alone** is always wrong — it clips to nothing finer than the base cells.
 
-To clip a value dataset (carbon, land cover, biomass — anything under a global `hex/h0=*/`) to a named region, **filter it by the region's hex mask at the finest resolution the two share, keyed on the mask's attribute.** The census state/county hexes are ordinary catalog datasets — find their exact path with `get_stac_details` like any other hex dataset.
+To clip a value dataset (carbon, land cover, biomass — anything under a global `hex/h0=*/`) to a named region, **filter it by the region's hex mask at the finest resolution the two share, keyed on the mask's attribute.** The census state/county hexes are ordinary catalog datasets — find their exact path in the catalog like any other hex dataset.
 
 The most robust form is an `IN` subquery: the attribute filter lives *inside* the subquery, so it can never be misplaced. Pair the `h8 IN (…)` boundary filter with a coarse `h0 IN (…)` prefilter to prune partitions:
 
