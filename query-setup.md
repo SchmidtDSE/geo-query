@@ -31,9 +31,9 @@ registry (`s3config.py`, extensible per deployment via `S3_SOURCES`).
 The registry-created `source_coop` secret is the anonymous, prefix-scoped
 fallback for the public source.coop mirror: DuckDB routes
 `s3://us-west-2.opendata.source.coop/...` paths to it automatically, while
-`s3://public-*` paths still go to Ceph. Use mirror paths (returned by the STAC
-tools as `s3://us-west-2.opendata.source.coop/cboettig/<dataset>/...`) when the
-primary Ceph endpoint is unavailable.
+`s3://public-*` paths still go to Ceph. Use mirror paths
+(`s3://us-west-2.opendata.source.coop/cboettig/<dataset>/...`) when the primary
+Ceph endpoint is unavailable.
 
 **Server-applied memory limit.** Beyond the settings above, the server issues
 `SET memory_limit` per connection, sized to ~80% of the pod's memory limit
