@@ -76,9 +76,6 @@ spec:
           value: "v0.9.10"
         - name: STAC_CATALOG_URL
           value: "https://s3-west.nrp-nautilus.io/public-data/stac/catalog.json"
-        # Same tool surface as the public schmidtdse server the apps use.
-        - name: STAC_DISCOVERY
-          value: "0"
         # One query at a time per pod (#530); more replicas carry the load.
         - name: MCP_QUERY_CONCURRENCY
           value: "1"

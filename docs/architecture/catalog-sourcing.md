@@ -1,5 +1,7 @@
 # Catalog sourcing: "carry the links" vs "the whole catalog"
 
+> **Superseded in part (#528).** The server no longer serves STAC: `browse_stac_catalog`, `get_stac_details`, `get_collection` and the `catalog://` resources are removed, and pods no longer load or refresh the catalog. Clients use their own STAC tools; `query` and `register_hex_tiles` read published https paths as `s3://`. Sections below that describe the server-side STAC tools are historical.
+
 How this server and its client apps discover and read datasets — and what that
 means for swapping, mixing, and backing up data sources (e.g. Ceph ↔ source.coop
 mirror ↔ minio). Reference/design note; the actionable follow-ups are tracked in

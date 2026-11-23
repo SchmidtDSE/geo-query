@@ -82,13 +82,9 @@ spec:
         # to the on-node S3 endpoint (plain http, path-style).
         - name: STAC_CATALOG_URL
           value: "http://rustfs-s3.rustfs.svc.cluster.local:9000/public-data/stac/catalog.json"
-        # Same catalog, external address, advertised by browse_stac_catalog and
-        # GET /version (#346).
+        # Same catalog, external address, advertised by GET /version (#346).
         - name: STAC_PUBLIC_CATALOG_URL
           value: "https://s3.carlboettiger.info/public-data/stac/catalog.json"
-        # Reroute nrp_ceph STAC metadata fetches to in-cluster rustfs-s3.
-        - name: S3_ENDPOINT_URL
-          value: "http://rustfs-s3.rustfs.svc.cluster.local:9000"
         # The mirror's STAC hrefs name its public host: s3.carlboettiger.info since
         # 2026-11-18, minio.carlboettiger.info before (still an alias). Route both
         # data reads (→ s3://, default secret) and STAC-JSON fetches to the
@@ -103,9 +99,6 @@ spec:
           value: "false"
         - name: MCP_PUBLIC_BASE_URL
           value: "https://duckdb-mcp.carlboettiger.info"
-        # Boot even if the STAC catalog is briefly unreachable at startup (#260).
-        - name: STAC_ALLOW_DEGRADED_START
-          value: "true"
         # Pod's cgroup memory limit → DuckDB memory_limit (~80%) (#270).
         - name: POD_MEMORY_LIMIT
           valueFrom:

@@ -65,12 +65,6 @@ spec:
           value: "v0.9.11"
         - name: STAC_CATALOG_URL
           value: "https://s3-west.nrp-nautilus.io/public-data/stac/catalog.json"
-        # No whole-catalog discovery (#420, #513). The glen apps behind this server
-        # answer get_stac_details from their own catalog in the browser and never
-        # register browse_stac_catalog, so the query description must not tell the
-        # model to call it. Headless callers here use only `query`.
-        - name: STAC_DISCOVERY
-          value: "0"
         # NRP Ceph is read through the internal RGW, the server's default
         # (rook-ceph-rgw-nautiluss3.rook, plain http). The egress NetworkPolicy
         # (schmidtdse-networkpolicy.yaml) allows port 80 for it.
