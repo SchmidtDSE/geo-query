@@ -249,26 +249,15 @@ TOOL_INJECTED_CONTEXT = f"""
 # -------------------------------------------------------------------------
 # 4. ISOLATION ENGINE
 # -------------------------------------------------------------------------
-from s3config import (
-    default_s3_secret_sql,
-    check_client_endpoint,
-    infer_use_ssl,
-    rewrite_sql_hrefs,
-    source_secret_sql,
-    sql_quote as _sql_quote,
-)
+from s3config import rewrite_sql_hrefs
 from querytime import QueryClock, TIME_LIMIT_MESSAGE
+# Connection setup and rendering live in queryworker, shared with the worker
+# processes (#551). redact_credentials is re-exported for callers of this module.
+from queryworker import WarmWorker, error_text, isolated_db, redact_credentials, render_result  # noqa: F401
 from dbconfig import (
-    connect_config,
     duckdb_max_temp_directory_size,
     duckdb_memory_limit,
-    memory_limit_sql,
-    query_threads,
     query_time_limit,
-    disable_persistent_secrets_sql,
-    lock_down,
-    locked_hint,
-    spill_sql,
 )
 
 # Cap DuckDB's memory at ~80% of the pod's limit so an oversized query spills
@@ -288,134 +277,13 @@ if _TEMP_CAP:
 
 @contextmanager
 def get_isolated_db(s3_key: str = None, s3_secret: str = None, s3_endpoint: str = None, s3_scope: str = None, s3_region: str = None, s3_url_style: str = None):
-    # An S3 key without its secret (or vice versa) can't authenticate. Rather
-    # than silently downgrade to anonymous — which yields a confusing 403 on a
-    # private bucket, or ignores the key entirely with no endpoint — fail fast
-    # with the actual cause (#285). Both present = credentialed; neither present
-    # = anonymous (optionally with s3_endpoint for a public mirror).
-    if bool(s3_key) != bool(s3_secret):
-        missing = "s3_secret" if s3_key else "s3_key"
-        raise ValueError(
-            f"{missing} is required: pass both s3_key and s3_secret together for "
-            f"a private bucket, or neither (optionally with s3_endpoint) for an "
-            f"anonymous source."
-        )
-    # Thread count and pinning are set at creation; a later SET misses running
-    # workers (#509).
-    conn = duckdb.connect(database=":memory:", config=connect_config(query_threads()))
-    try:
-        conn.sql(disable_persistent_secrets_sql())
-        for stmt in (s.strip() for s in SETUP_SQL.split(";") if s.strip()):
-            try:
-                conn.sql(stmt)
-            except Exception as e:
-                print(f"⚠️ Setup statement skipped: {stmt!r}: {e}", file=sys.stderr)
-        # Work around a DuckDB `statistics_propagation` bug (#378): a SEMI/INNER
-        # join whose probe side is a multi-row-group, UINT64-key-sorted parquet
-        # read over S3 raises `INTERNAL Error: SetMin or SetMax ... does not match
-        # statistics' column value` when the build side's key range is disjoint
-        # from some row groups' zonemaps (empty intersection asserts instead of
-        # pruning). Present in DuckDB 1.5.3/1.5.4; S3-transport-specific. This hits
-        # real queries — masking the nhd-flowline / ACE families by a region scope
-        # (the car-28 line-length cell) crashes instead of returning a number.
-        # Disabling this one optimizer fixes it with no measurable perf cost (h0
-        # hive-partition pruning is independent of it). An engine workaround, not
-        # model guidance, so it lives here rather than in query-setup.md. Remove
-        # when the upstream fix ships and the pin moves past it.
-        try:
-            conn.sql("SET disabled_optimizers='statistics_propagation'")
-        except Exception as e:
-            print(f"⚠️ disabled_optimizers setup skipped: {e}", file=sys.stderr)
-        # Opt-in extras (experimental image only — empty list on the default tag).
-        # Warn rather than raise: a missing extension should degrade this connection's
-        # capability, not fail every query the replica serves.
-        for ext in EXTRA_EXTENSIONS:
-            try:
-                conn.sql(f"LOAD {ext}")
-            except Exception as e:
-                print(f"⚠️ Extra extension {ext!r} not loaded: {e}", file=sys.stderr)
-        # Bound memory to the pod so a big aggregate spills instead of OOM-killing
-        # the replica (#270). Not part of SETUP_SQL: the value is deployment-derived
-        # (dbconfig reads POD_MEMORY_LIMIT/DUCKDB_MEMORY_LIMIT), not model guidance.
-        mem_sql = memory_limit_sql()
-        if mem_sql:
-            try:
-                conn.sql(mem_sql)
-            except Exception as e:
-                print(f"⚠️ memory_limit setup skipped: {mem_sql!r}: {e}", file=sys.stderr)
-        # A private, bounded spill directory for this connection (#423). After
-        # SETUP_SQL so it replaces the shared '/tmp' there — concurrent spills
-        # into one directory segfault the process.
-        for stmt in spill_sql():
-            try:
-                conn.sql(stmt)
-            except Exception as e:
-                print(f"⚠️ spill setup skipped: {stmt!r}: {e}", file=sys.stderr)
-        # Prefix-scoped secrets for every registry source (#264) — e.g. the
-        # anonymous source.coop mirror. Scoped, so they coexist deterministically
-        # with both the default `s3` secret and any client_s3 below (longest-
-        # scope match wins); shared with the tile connection via s3config.
-        for stmt in source_secret_sql():
-            try:
-                conn.sql(stmt)
-            except Exception as e:
-                print(f"⚠️ Source secret skipped: {e}", file=sys.stderr)
-        # Bring-your-own-bucket. Two symmetric cases, both routed through one
-        # per-request `client_s3` secret:
-        #   - credentialed: both s3_key and s3_secret given (private data).
-        #   - anonymous:    only s3_endpoint given, no creds (a public mirror,
-        #     e.g. MinIO/source.coop during a Ceph outage — #264). We key off
-        #     s3_endpoint here because an anonymous bucket has no other signal.
-        # Pass s3_scope (e.g. 's3://public-') so this secret applies only to those
-        # paths and everything else keeps the deployment default below.
-        credentialed = bool(s3_key and s3_secret)
-        has_client = credentialed or bool(s3_endpoint)
-        if has_client:
-            endpoint = s3_endpoint or "s3-west.nrp-nautilus.io"
-            check_client_endpoint(endpoint)
-            key = s3_key if credentialed else ""
-            secret = s3_secret if credentialed else ""
-            use_ssl = infer_use_ssl(endpoint)
-            # URL_STYLE defaults to 'path' (correct for Ceph/MinIO); REGION is
-            # omitted unless given. A bring-your-own AWS-hosted bucket needs both
-            # knobs — the built-in source_coop registry entry needed exactly
-            # REGION + url_style to work (#286).
-            url_style = s3_url_style or "path"
-            region_clause = f", REGION '{_sql_quote(s3_region)}'" if s3_region else ""
-            scope_clause = f", SCOPE '{_sql_quote(s3_scope)}'" if s3_scope else ""
-            # Credentials (if any) injected here; intentionally not logged.
-            conn.sql(
-                f"CREATE OR REPLACE SECRET client_s3 ("
-                f"TYPE S3, KEY_ID '{_sql_quote(key)}', SECRET '{_sql_quote(secret)}', "
-                f"ENDPOINT '{_sql_quote(endpoint)}', URL_STYLE '{_sql_quote(url_style)}', "
-                f"USE_SSL '{use_ssl}'"
-                f"{region_clause}{scope_clause})"
-            )
-        # Default S3 endpoint — server-owned and per-deployment configurable (#268),
-        # built by s3config (shared with the tile subsystem). Lets you deploy this
-        # codebase as a data-access head pointed at any storage (Ceph / MinIO /
-        # source.coop) purely via env, no code change.
-        #
-        # Skipped when client_s3 exists UNSCOPED: DuckDB's pick between two unscoped
-        # secrets is an undocumented tie-break (empirically client_s3 captured every
-        # path on duckdb 1.5.4, regardless of creation order — #271). Rather than
-        # depend on that, make the de-facto semantic explicit and deterministic:
-        # without s3_scope, the client's endpoint/creds own ALL s3:// paths for this
-        # request; with s3_scope, the default serves everything outside the scope.
-        if not (has_client and not s3_scope):
-            try:
-                conn.sql(default_s3_secret_sql())
-            except Exception as e:
-                print(f"⚠️ Default S3 secret setup skipped: {e}", file=sys.stderr)
-        # Last: no local file access for caller SQL (NRP incident 2026-11-06).
-        lock_down(conn)
-        spill_dir = SPILL_GUARD.register(conn)
-        try:
-            yield conn
-        finally:
-            SPILL_GUARD.unregister(spill_dir)
-    finally:
-        conn.close()
+    """A fresh, locked-down connection for one in-process query (queryworker.py
+    holds the setup, shared with the worker processes of #551)."""
+    with isolated_db(SETUP_SQL, EXTRA_EXTENSIONS, register=SPILL_GUARD.register,
+                     unregister=SPILL_GUARD.unregister, s3_key=s3_key, s3_secret=s3_secret,
+                     s3_endpoint=s3_endpoint, s3_scope=s3_scope, s3_region=s3_region,
+                     s3_url_style=s3_url_style) as conn:
+        yield conn
 
 # -------------------------------------------------------------------------
 # 5. MCP PROMPTS (Personas for Smart Clients)
@@ -430,15 +298,9 @@ def analyst_persona() -> str:
 SECRET_FUNCTIONS = re.compile(r"\b(duckdb_secrets|which_secret)\b", re.IGNORECASE)
 
 
-def redact_credentials(text: str, values) -> str:
-    """Replace each credential value in text with [REDACTED]."""
-    for v in values:
-        if v and len(v) >= 4:
-            text = text.replace(v, "[REDACTED]")
-    return text
 
 
-def query(sql_query: str, s3_key: str = None, s3_secret: str = None, s3_endpoint: str = None, s3_scope: str = None, s3_region: str = None, s3_url_style: str = None) -> str:
+def query(sql_query: str, s3_key: str = None, s3_secret: str = None, s3_endpoint: str = None, s3_scope: str = None, s3_region: str = None, s3_url_style: str = None, stop: threading.Event = None) -> str:
     """Placeholder (overwritten below)."""
     print(f"🔍 Executing [{CALLER.get()}]: {sql_query}", file=sys.stderr)
     # Published https paths from any STAC client run as-is (#528).
@@ -453,6 +315,14 @@ def query(sql_query: str, s3_key: str = None, s3_secret: str = None, s3_endpoint
     # retry lands on another replica while /readyz takes this one out of the Service.
     if SPILL_GUARD.under_pressure():
         return SPILL_BUSY_MESSAGE
+    # One worker process per query (#551): it is killed at the time limit or
+    # when the client goes, and its memory returns to the OS when it exits.
+    if QUERY_WORKER is not None:
+        return QUERY_WORKER.run(
+            sql_query,
+            {"s3_key": s3_key, "s3_secret": s3_secret, "s3_endpoint": s3_endpoint,
+             "s3_scope": s3_scope, "s3_region": s3_region, "s3_url_style": s3_url_style},
+            time_limit=query_time_limit(), stop=stop, caller=CALLER.get())
     spill_dir = None
     clock = None
     try:
@@ -461,97 +331,7 @@ def query(sql_query: str, s3_key: str = None, s3_secret: str = None, s3_endpoint
             limit = query_time_limit()
             if limit:
                 clock = QueryClock(db, sql_query, limit, caller=CALLER.get())
-            result = db.sql(sql_query)
-            if result is None: return "Command executed successfully."
-
-            # Drop geometry columns — GEOMETRY('OGC:CRS84') crashes pandas conversion
-            # (DuckDB issue: unsupported NumPy type). Geometry is not useful in tabular output.
-            geom_cols = [c for c, t in zip(result.columns, result.dtypes) if "GEOMETRY" in str(t).upper()]
-            if geom_cols:
-                keep = [f'"{c}"' for c in result.columns if c not in geom_cols]
-                result = result.select(", ".join(keep))
-
-            # Render temporal types as strings in DuckDB so the formatting does
-            # not depend on the rest of the projection. A DuckDB DATE has no time
-            # component, but pandas' to_markdown renders through df.values, which
-            # flips between an ISO-with-microseconds form (all-datetime frame) and
-            # a space-separated form (mixed frame) depending on the other columns
-            # — neither is YYYY-MM-DD. strftime here is authoritative and
-            # shape-independent (#361).
-            #
-            # Same treatment, same reason, for 64-bit+ integers (#387). tabulate
-            # formats them through float64, which is exact only to 2^53
-            # (9.007e15) — so an H3 index (~6.1e17) printed as `6.13762e+17` has
-            # lost ~11 digits and names a different cell. Every hex asset carries
-            # `h0`…`h15`, and h0 is BIGINT while h8/h10 are UBIGINT, so both
-            # signed and unsigned must be cast. Unlike #361 this was never
-            # shape-dependent: a single-column frame renders scientific too.
-            # Casting is only a display change — a count still renders as `3`,
-            # right-aligned, because tabulate re-parses the numeric string.
-            # NULLs must become '' rather than staying NULL. Under pandas 3 a
-            # str-dtype column holds missing values as the FLOAT nan, so one NULL
-            # makes tabulate type the whole column as float and every wide int
-            # reverts to `6.13762e+17` — the cast silently undone by a single
-            # missing cell (the IUCN size-stratified assets have NULL finer
-            # h-columns, so this is live). It also stops a NULL date printing as
-            # the literal `nan`, which reads as a value.
-            # Floats need the same treatment for the same reason, but the fix is NOT
-            # the same (#410). tabulate's default `floatfmt` is `g` — six significant
-            # figures — so a 26-million-acre total printed `2.64715e+07` and a dollar
-            # sum `3.212e+08`. `ROUND()` does not help: this is the display layer, so
-            # the obvious model-side workaround fails. Two traps here:
-            #   * A VARCHAR cast alone is NOT enough. Unlike a wide int, a float string
-            #     is re-parsed by tabulate and re-formatted straight back to
-            #     `1.95736e+07`, so the cast must be paired with `disable_numparse` for
-            #     exactly those columns. (Whole-table `disable_numparse` would undo the
-            #     wide-int alignment above; a `colalign` tuple with `None` holes drops
-            #     the padding entirely.)
-            #   * `%.10g` rather than a plain cast, because a raw DOUBLE cast exposes
-            #     representation noise — `1.74` becomes `1.7400000000000002`, and 1.74
-            #     is a live gold value. DECIMAL casts exactly instead, since it is
-            #     exact in DuckDB and only becomes lossy at the pandas boundary.
-            # The cost is that these columns render left-aligned. Accepted: this table
-            # is consumed by a model, so precision matters and alignment does not.
-            # It also restores the NULL-vs-NaN distinction — both printed `nan` before,
-            # while `query-optimization.md` §7 tells models to filter the NaN sentinel.
-            # A NULL is now blank and a real NaN still says `nan`.
-            WIDE_INTS = ("BIGINT", "UBIGINT", "HUGEINT", "UHUGEINT")  # > 2^53
-            rendered = []
-            no_numparse = []  # column indices tabulate must not re-parse (#410)
-            for i, (c, t) in enumerate(zip(result.columns, result.dtypes)):
-                tu, q = str(t).upper(), f'"{c}"'
-                if tu == "DATE":
-                    expr = f"strftime({q}, '%Y-%m-%d')"
-                elif tu.startswith("TIMESTAMP"):
-                    expr = f"strftime({q}, '%Y-%m-%d %H:%M:%S')"
-                elif tu in WIDE_INTS:
-                    expr = f"CAST({q} AS VARCHAR)"
-                elif tu in ("DOUBLE", "FLOAT"):
-                    expr = f"printf('%.10g', {q})"
-                    no_numparse.append(i)
-                elif tu.startswith("DECIMAL"):
-                    expr = f"CAST({q} AS VARCHAR)"
-                    no_numparse.append(i)
-                else:
-                    rendered.append(None)
-                    continue
-                rendered.append(f"COALESCE({expr}, '') AS {q}")
-            if any(rendered):
-                proj = [expr or f'"{c}"' for expr, c in zip(rendered, result.columns)]
-                result = result.select(", ".join(proj))
-
-            # Fetch one extra row to detect truncation without a second COUNT scan.
-            df = result.limit(51).df()
-            if df.empty: return "No results found."
-            truncated = len(df) > 50
-            md = df.head(50).to_markdown(index=False, disable_numparse=no_numparse)
-            if truncated:
-                md += (
-                    "\n\n⚠️ Showing the first 50 rows only — this is a preview, not the"
-                    " full result and NOT a count. The true number of matching rows is"
-                    " larger; use COUNT(...) / COUNT(DISTINCT ...) / SUM(...) for totals."
-                )
-            return redact_credentials(md, (s3_key, s3_secret))
+            return render_result(db.sql(sql_query), (s3_key, s3_secret))
 
     except Exception as e:
         if isinstance(e, duckdb.InterruptException):
@@ -560,11 +340,7 @@ def query(sql_query: str, s3_key: str = None, s3_secret: str = None, s3_endpoint
                 return SPILL_INTERRUPTED_MESSAGES.get(reason, SPILL_INTERRUPTED_MESSAGE)
             if clock is not None and clock.expired.is_set():
                 return TIME_LIMIT_MESSAGE.format(limit=clock.limit)
-        # An S3 error can repeat the request's key ID (InvalidAccessKeyId,
-        # SignatureDoesNotMatch), and this text goes back to the model.
-        msg = redact_credentials(str(e), (s3_key, s3_secret))
-        hint = locked_hint(msg)
-        return f"SQL Error: {msg}" + (f"\n\n{hint}" if hint else "")
+        return error_text(e, (s3_key, s3_secret))
     finally:
         if clock is not None:
             clock.stop()
@@ -590,7 +366,20 @@ WITHOUT s3_scope, your endpoint applies to EVERY s3:// path in the query and the
 # offloaded the hex tools the same way; query was the remaining sync-on-loop tool.
 # A CapacityLimiter bounds concurrent scans so a burst can't oversubscribe the
 # pod's CPU/memory or starve the hex tools sharing anyio's default thread pool.
-_QUERY_LIMITER = anyio.CapacityLimiter(int(os.environ.get("MCP_QUERY_CONCURRENCY", "8")))
+#
+# QUERY_WORKERS=1 runs each query in its own worker process (#551), one at a time:
+# a heavy query owns the pod, and other queries go to other replicas. When several
+# workers overlap and the pod runs out of memory, the kernel kills the biggest,
+# which is the heavy query this server exists to finish, so workers mean
+# concurrency 1. The spare worker is started at server start-up, not on import,
+# so tests and tools that import this module start no processes.
+QUERY_WORKERS = os.environ.get("QUERY_WORKERS", "").strip() == "1"
+_QUERY_CONCURRENCY = 1 if QUERY_WORKERS else int(os.environ.get("MCP_QUERY_CONCURRENCY", "8"))
+if QUERY_WORKERS and os.environ.get("MCP_QUERY_CONCURRENCY", "1").strip() != "1":
+    print("⚠️ MCP_QUERY_CONCURRENCY ignored: QUERY_WORKERS=1 runs one query at a time (#551)",
+          file=sys.stderr)
+_QUERY_LIMITER = anyio.CapacityLimiter(_QUERY_CONCURRENCY)
+QUERY_WORKER: WarmWorker | None = None
 
 
 async def _query_tool(
@@ -610,11 +399,12 @@ async def _query_tool(
     if not sql_query:
         return "SQL Error: no query provided — pass the SQL as `sql_query` (the alias `sql` is also accepted)."
     enqueued = time.monotonic()
+    stop = threading.Event()
 
     def _timed_query() -> str:
         started = time.monotonic()
         result = query(sql_query, s3_key, s3_secret, s3_endpoint, s3_scope,
-                       s3_region, s3_url_style)
+                       s3_region, s3_url_style, stop=stop)
         outcome = "error" if result.startswith("SQL Error") else "ok"
         if result.startswith(TIME_LIMIT_MESSAGE[:40]):
             outcome = "time-limit"
@@ -626,7 +416,14 @@ async def _query_tool(
               f"(waited {started - enqueued:.1f}s for a slot)", file=sys.stderr)
         return result
 
-    return await anyio.to_thread.run_sync(_timed_query, limiter=_QUERY_LIMITER)
+    # With workers, a cancelled request (the client went away) stops waiting at
+    # once and the stop flag kills the query's worker (#540).
+    try:
+        return await anyio.to_thread.run_sync(_timed_query, limiter=_QUERY_LIMITER,
+                                              abandon_on_cancel=QUERY_WORKER is not None)
+    except BaseException:
+        stop.set()
+        raise
 
 
 # Register the async wrapper under the tool name, reusing the sync function's
@@ -1381,6 +1178,12 @@ if __name__ == "__main__":
     else:
         print("🔓 Auth disabled (no MCP_AUTH_TOKENS_DIR or MCP_AUTH_TOKEN)", file=sys.stderr)
     print(_describe_transport_security(_TRANSPORT_SECURITY), file=sys.stderr)
+
+    if QUERY_WORKERS:
+        QUERY_WORKER = WarmWorker(SETUP_SQL, EXTRA_EXTENSIONS)
+        QUERY_WORKER.start()
+        print("🧩 Query workers on: one query at a time, each in a fresh process (#551)",
+              file=sys.stderr)
 
     print("🚀 Starting DuckDB MCP Server...", file=sys.stderr)
     SPILL_GUARD.start()

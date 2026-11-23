@@ -81,22 +81,34 @@ connection that runs caller SQL. Never print, log or commit a token. Never loose
 without a security review: in November 2026 a public DuckDB file read leaked the
 pod's Kubernetes service-account token.
 
-### Sizing: one heavy query first
+### Sizing: one heavy query per replica
 
-Size each replica for one user running one heavy query. Simultaneous use is
-rare outside glen-benchmark flights.
+**The design goal is settled: every replica must be able to finish one large
+query.** Throughput comes from the number of replicas and from a proxy that
+sends each query to an idle replica, never from packing queries onto one pod.
+Do not propose changes that trade a heavy query's chance of finishing for
+parallel work on the same replica. Simultaneous use is rare outside
+glen-benchmark flights.
 
-- Every DuckDB connection gets the whole budget: `memory_limit` is 80% of the
-  pod and threads are DuckDB's default, the pod's CPU limit. Do not divide
-  memory or threads by query concurrency. That makes the common heavy query
-  spill or slow down to make room for parallel queries that seldom happen.
-  An even split was tried and dropped in #520.
-- When several heavy queries overlap, the memory guard (`spillguard.py`, #428)
-  drains the pod and interrupts queries before the cgroup OOM.
+- **Each query gets the whole pod.** `memory_limit` is 80% of the pod and
+  threads are DuckDB's default, the pod's CPU limit. Do not divide memory or
+  threads by query concurrency: that makes the common heavy query spill or slow
+  down for parallel queries that seldom happen. An even split was tried and
+  dropped in #520.
+- **One query at a time per replica.** With `QUERY_WORKERS=1` (#551) the server
+  enforces it: each query runs in a fresh worker process, and one prepared
+  worker waits for the next query, so start-up is not paid per query. Overlap
+  is what this avoids. When overlapping queries run a pod out of memory, the
+  kernel kills the biggest process, which is the heavy query.
+- **Throughput is replicas plus routing.** A proxy sends each query to an idle
+  replica and holds it until one is free. `k8s/bench-proxy.yaml` (HAProxy,
+  #539) does this for bench. Prod, dev and schmidtdse go through NRP's shared
+  ingress with `leastconn`, which avoids busy pods but does not hold a query
+  for an idle one. Each needs the same proxy before it turns `QUERY_WORKERS` on.
+- Until workers are on, the memory guard (`spillguard.py`, #428) drains the pod
+  and interrupts queries before the cgroup OOM. #551 removes it.
 - For benchmark load, add replicas for the flight and scale back after it.
-  Do not shrink per-query resources. A lower `MCP_QUERY_CONCURRENCY` per pod
-  is acceptable, because it costs a single query nothing, and keeps heavy
-  queries from overlapping on one pod (#530).
+  Never shrink per-query resources to fit more queries on a pod.
 - Never raise a pod's resource requests above what it uses to protect it from
   node memory pressure. That breaks NRP's usage policy. When a run needs more
   headroom than NRP pods give, run it against the cirrus deployment
