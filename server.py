@@ -265,6 +265,7 @@ from s3config import (
     default_s3_secret_sql,
     check_client_endpoint,
     infer_use_ssl,
+    rewrite_sql_hrefs,
     source_secret_sql,
     sql_quote as _sql_quote,
 )
@@ -534,6 +535,10 @@ def redact_credentials(text: str, values) -> str:
 def query(sql_query: str, s3_key: str = None, s3_secret: str = None, s3_endpoint: str = None, s3_scope: str = None, s3_region: str = None, s3_url_style: str = None) -> str:
     """Placeholder (overwritten below)."""
     print(f"🔍 Executing [{CALLER.get()}]: {sql_query}", file=sys.stderr)
+    # Published https paths from any STAC client run as-is (#528).
+    sql_query, rewrites = rewrite_sql_hrefs(sql_query)
+    if rewrites:
+        print(f"🔁 Rewrote {rewrites} https path(s) to s3://", file=sys.stderr)
     # duckdb_secrets() redacts the secret but shows the key ID, including one a
     # proxy injected for this query. The secrets belong to the deployment.
     if SECRET_FUNCTIONS.search(sql_query):
@@ -1031,6 +1036,9 @@ def register_hex_tiles(
 
     Always pass hive_partitioning = true so the planner can prune h0=* files.
     """
+    # Published https paths from any STAC client run as-is (#528). Before the
+    # cache key is taken, so the https and s3:// forms share one pyramid.
+    sql, _ = rewrite_sql_hrefs(sql)
     # A fresh connection per call, closed on return (#519). The probes run the
     # caller's SQL (the finest_res probe runs its whole aggregation). They used to
     # run on the pod-lifetime tile connection, and a long-lived DuckDB instance

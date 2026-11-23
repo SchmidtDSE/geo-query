@@ -196,3 +196,40 @@ def test_allowed_endpoints_extend_from_env_and_registry(monkeypatch):
     hosts = allowed_client_endpoints()
     assert {"minio.example.org", "other.example.edu", "reg.example.net"} <= hosts
     check_client_endpoint("reg.example.net")
+
+
+class TestRewriteSqlHrefs:
+    """https paths from any STAC client run as-is in `query` (#528)."""
+
+    def test_rewrites_registered_prefixes_in_literals(self, monkeypatch):
+        monkeypatch.delenv("S3_SOURCES", raising=False)
+        sql = (
+            "SELECT COUNT(*) FROM read_parquet('https://s3-west.nrp-nautilus.io/public-wdpa/wdpa/hex/h0=*/data_0.parquet') a "
+            "JOIN read_parquet(['https://data.source.coop/cboettig/carbon/h0=*/d.parquet']) b USING (h8, h0)"
+        )
+        out, n = s3config.rewrite_sql_hrefs(sql)
+        assert n == 2
+        assert "'s3://public-wdpa/wdpa/hex/h0=*/data_0.parquet'" in out
+        assert "'s3://us-west-2.opendata.source.coop/cboettig/carbon/h0=*/d.parquet'" in out
+        assert "https://" not in out
+
+    def test_leaves_other_text_alone(self, monkeypatch):
+        monkeypatch.delenv("S3_SOURCES", raising=False)
+        sql = (
+            "SELECT 'see https://example.com/x' AS note, "
+            "'https://example.com/other.parquet' AS unknown_host, "
+            "'s3://public-carbon/x.parquet' AS already_s3 "
+            "-- from https://s3-west.nrp-nautilus.io/public-carbon/stac.json"
+        )
+        out, n = s3config.rewrite_sql_hrefs(sql)
+        assert n == 0
+        assert out == sql
+
+    def test_env_source(self, monkeypatch):
+        monkeypatch.setenv(
+            "S3_SOURCES",
+            '[{"name": "campus_minio", "https_prefix": "https://minio.example.edu/",'
+            ' "s3_prefix": "s3://"}]',
+        )
+        out, n = s3config.rewrite_sql_hrefs("FROM 'https://minio.example.edu/b/k.parquet'")
+        assert (out, n) == ("FROM 's3://b/k.parquet'", 1)

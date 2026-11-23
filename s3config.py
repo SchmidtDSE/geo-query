@@ -166,6 +166,26 @@ def rewrite_href(href: str) -> str:
     return href
 
 
+def rewrite_sql_hrefs(sql: str) -> tuple[str, int]:
+    """Rewrite registered https prefixes to s3:// in a SQL string (#528).
+
+    A model that takes a path from any STAC client gets the published https
+    href, and DuckDB cannot glob over https (`h0=*`) or route it to the
+    deployment's secret. This applies `rewrite_href` to every string literal
+    that starts with a registered https prefix, so such paths work as-is.
+    Only a literal's start is matched ('https://…), never text elsewhere.
+    Returns the SQL and the number of rewrites.
+    """
+    total = 0
+    for src in get_sources():
+        hp, sp = src.get("https_prefix"), src.get("s3_prefix")
+        if not (hp and sp):
+            continue
+        sql, n = re.subn("'" + re.escape(hp), lambda _m, sp=sp: "'" + sp, sql)
+        total += n
+    return sql, total
+
+
 def metadata_href(href: str) -> str:
     """Registry-driven reroute for STAC-metadata (JSON) fetches.
 
