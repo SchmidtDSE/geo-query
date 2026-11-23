@@ -66,11 +66,11 @@ spec:
         # The v0.9.11 release (main at 5d84727; includes #520, #525, #526, #527).
         # Pinned by digest so both replicas converge on one build. APP_VERSION
         # below must match the tag; CI checks it.
-        image: ghcr.io/schmidtdse/geo-query:v0.9.11@sha256:89f4f961b2d54b9c2ba70f16a0c100044d548d92b483fddf758afbfd8d925941
+        image: ghcr.io/schmidtdse/geo-query:v0.10.0@sha256:a41f1da0149bb7d7a150f5840fa918e6b6dd7b09abb2727844ffeee740cdcdc6
         imagePullPolicy: IfNotPresent
         env:
         - name: APP_VERSION
-          value: "v0.9.11"
+          value: "v0.10.0"
         # Bearer-token auth (#43, #454): every route except /healthz and /version
         # (and public /tiles below) needs `Authorization: Bearer <token>`. The
         # server refuses to start if this directory holds no tokens.
