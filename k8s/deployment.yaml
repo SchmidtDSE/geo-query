@@ -129,7 +129,10 @@ spec:
           httpGet:
             path: /readyz
             port: 8000
-          initialDelaySeconds: 15
+          # Start checking right away: the server listens ~5 s after the container
+          # starts, and a failed readiness check only keeps the pod out of the
+          # Service. 15 s here left new pods idle for ~11 s.
+          initialDelaySeconds: 2
           periodSeconds: 5
           timeoutSeconds: 2
           # One failure takes the pod out within ~5 s, so a second heavy query
