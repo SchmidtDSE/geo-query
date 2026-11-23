@@ -255,9 +255,11 @@ list mismatched digests that are **not** a live convergence failure. (Observed o
 stale `true`, sitting on v0.8.8/0.8.9-era digests alongside six converged v0.8.15 pods.)
 
 Check what actually serves, not the raw pod list:
-- **Service endpoints are authoritative** — `kubectl -n biodiversity get endpoints mcp-server-duckdb`
-  (prod) or `dev-duckdb-mcp-pods` (dev; `dev-mcp-server-duckdb` now points at the proxy in
-  `k8s/dev-proxy.yaml`) lists only the pods receiving traffic. Orphans are
+- **Service endpoints are authoritative** — `kubectl -n biodiversity get endpoints duckdb-mcp-pods`
+  (prod; `-n schmidtdse` for schmidtdse) or `dev-duckdb-mcp-pods` (dev) lists only the pods
+  receiving traffic. These are the headless Services the idle-routing proxies read
+  (`k8s/proxy.yaml`, `k8s/schmidtdse-proxy.yaml`, `k8s/dev-proxy.yaml`); the public-facing
+  Services `mcp-server-duckdb`, `duckdb-mcp` and `dev-mcp-server-duckdb` list the proxy. Orphans are
   excluded because their **pod-level `Ready` condition is `False`**, even when the container's
   own `ready` is a stale `true`. So the real check is: **every endpoint-backing pod converges
   on the manifest digest.**

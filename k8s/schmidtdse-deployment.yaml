@@ -8,7 +8,10 @@ metadata:
   name: duckdb-mcp
   namespace: schmidtdse
 spec:
-  replicas: 2
+  # One query per pod (#551), so capacity is replicas. Data-workflows CI sends
+  # bursts of up to 7 queries; 4 pods keep interactive app queries from waiting
+  # long behind a burst.
+  replicas: 4
   selector:
     matchLabels:
       app: duckdb-mcp
@@ -108,6 +111,10 @@ spec:
             resourceFieldRef:
               containerName: server
               resource: limits.ephemeral-storage
+        # One query at a time, each in a fresh worker process (#551). Needs the
+        # idle-routing proxy in schmidtdse-proxy.yaml in front of the pods.
+        - name: QUERY_WORKERS
+          value: "1"
         volumeMounts:
         - name: mcp-tokens
           mountPath: /etc/mcp-tokens
