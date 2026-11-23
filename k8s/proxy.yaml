@@ -1,0 +1,149 @@
+# HAProxy in front of the production MCP server (biodiversity, duckdb-mcp).
+#
+# The pods run QUERY_WORKERS=1 (#551): one query at a time, so a heavy query gets
+# the whole pod (AGENTS.md, "Sizing: one heavy query per replica"). This proxy
+# gives each `query` call to an idle pod and, if every pod is busy, holds it here
+# until one frees up. Other calls (tools/list, hex tools, /tiles, /version) go
+# straight to the least busy pod. It is the proxy bench uses (bench-proxy.yaml,
+# #539) and dev uses (dev-proxy.yaml).
+#
+# - One proxy replica: two would each allow one query per pod, so two queries
+#   could land on the same pod.
+# - The proxy finds the pods through the headless Service below, which lists only
+#   Ready pods, and checks /readyz itself.
+# - Timeouts sit above the clients' 10-minute MCP timeout.
+#
+# Rollout, with the release that first carries QUERY_WORKERS (#552): apply this
+# file and wait for the proxy to be Ready, apply deployment.yaml (it pins the
+# release and sets QUERY_WORKERS=1), then apply service.yaml, which points
+# mcp-server-duckdb at this proxy. To undo, point the Service back at
+# app: duckdb-mcp.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: duckdb-mcp-proxy
+  namespace: biodiversity
+data:
+  haproxy.cfg: |
+    global
+      log stdout format raw local0 info
+      maxconn 4000
+      # Room to read the tool name from a request body with long SQL.
+      tune.bufsize 65536
+
+    defaults
+      mode http
+      log global
+      option httplog
+      timeout connect 5s
+      timeout http-request 60s
+      timeout client 20m
+      timeout server 20m
+      timeout queue 20m
+      timeout http-keep-alive 60s
+      # Drop a queued request whose client has gone, instead of sending it to
+      # a pod later to run for nobody (#540).
+      option abortonclose
+
+    resolvers kube
+      parse-resolv-conf
+      hold valid 5s
+      accepted_payload_size 8192
+
+    frontend mcp
+      bind :8000
+      option http-buffer-request
+      acl is_query req.body -m reg "\"name\"[[:space:]]*:[[:space:]]*\"query\""
+      use_backend query_slots if is_query
+      default_backend other_calls
+
+    # One query per pod: a call goes to an idle pod, or waits here for one.
+    backend query_slots
+      balance leastconn
+      option httpchk GET /readyz
+      default-server check inter 5s fall 1 rise 1 resolvers kube init-addr none maxconn 1
+      server-template mcp 16 duckdb-mcp-pods.biodiversity.svc.cluster.local:8000
+
+    # Calls that do not take a query slot.
+    backend other_calls
+      balance leastconn
+      option httpchk GET /readyz
+      default-server check inter 5s fall 1 rise 1 resolvers kube init-addr none
+      server-template mcp 16 duckdb-mcp-pods.biodiversity.svc.cluster.local:8000
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: duckdb-mcp-proxy
+  namespace: biodiversity
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: duckdb-mcp-proxy
+  template:
+    metadata:
+      labels:
+        app: duckdb-mcp-proxy
+      annotations:
+        # Bump to roll the proxy after changing the ConfigMap.
+        duckdb-mcp-proxy/config-rev: "1"
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 99
+        runAsGroup: 99
+        seccompProfile:
+          type: RuntimeDefault
+      volumes:
+      - name: config
+        configMap:
+          name: duckdb-mcp-proxy
+      containers:
+      - name: haproxy
+        image: docker.io/library/haproxy:3.0.31-alpine@sha256:7430e63d3052198b18a40665b59a5826bc428e8bceb0c561d82258149ef855ee
+        imagePullPolicy: IfNotPresent
+        args: ["haproxy", "-W", "-db", "-f", "/usr/local/etc/haproxy/haproxy.cfg"]
+        volumeMounts:
+        - name: config
+          mountPath: /usr/local/etc/haproxy
+          readOnly: true
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop: ["ALL"]
+        resources:
+          requests:
+            memory: 128Mi
+            cpu: 100m
+          limits:
+            memory: 512Mi
+            cpu: "1"
+        ports:
+        - containerPort: 8000
+        readinessProbe:
+          tcpSocket:
+            port: 8000
+          periodSeconds: 5
+        livenessProbe:
+          tcpSocket:
+            port: 8000
+          initialDelaySeconds: 10
+          periodSeconds: 30
+---
+# Headless: DNS returns the Ready MCP pods, which the proxy resolves itself.
+apiVersion: v1
+kind: Service
+metadata:
+  name: duckdb-mcp-pods
+  namespace: biodiversity
+spec:
+  clusterIP: None
+  selector:
+    app: duckdb-mcp
+  ports:
+    - protocol: TCP
+      port: 8000
+      targetPort: 8000

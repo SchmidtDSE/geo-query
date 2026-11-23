@@ -8,8 +8,9 @@ metadata:
   name: duckdb-mcp
   namespace: schmidtdse
 spec:
+  # The HAProxy in schmidtdse-proxy.yaml, which gives each query to an idle pod (#551).
   selector:
-    app: duckdb-mcp
+    app: duckdb-mcp-proxy
   sessionAffinity: None
   ports:
     - protocol: TCP

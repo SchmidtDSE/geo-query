@@ -50,6 +50,8 @@ spec:
           - tpl-ca
           - tpl-cities
           - utah-public-lands
+          # The idle-routing proxy in schmidtdse-proxy.yaml (#551).
+          - duckdb-mcp-proxy
     ports:
     - port: 8000
       protocol: TCP

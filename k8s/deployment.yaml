@@ -93,6 +93,10 @@ spec:
             resourceFieldRef:
               containerName: server
               resource: limits.ephemeral-storage
+        # One query at a time, each in a fresh worker process (#551). Needs the
+        # idle-routing proxy in proxy.yaml in front of the pods.
+        - name: QUERY_WORKERS
+          value: "1"
         volumeMounts:
         - name: mcp-tokens
           mountPath: /etc/mcp-tokens
