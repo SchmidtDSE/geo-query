@@ -185,7 +185,7 @@ FRAGMENTS = {
     "h3-guide.md:598ddf3355": "needs dataset-specific columns (_cng_fid, amount, state_id); no representative mapping",
     "h3-guide.md:e2dfe983ec": "CTE fragment referencing an undefined `flat_funding` relation",
     "h3-guide.md:ec06ef4087": "CTE fragment referencing undefined `countries`/`carbon_data` relations",
-    "h3-guide.md:377ec327e2": "two-query block over generic `value`/`class` columns (SUM/AVG vs MODE illustration)",
+    "h3-guide.md:db0d89b068": "two-query block over generic `value`/`class` columns (SUM vs MODE illustration)",
     "h3-guide.md:b774ac61d1": "single-layer fractional overlay over a literal `class` column; no mapped dataset uses that column name (cwhr13 uses `whr13num`)",
     "h3-guide.md:1ccc1fb7d7": "references an undefined `mask` relation (DPP mask-first illustration)",
     "h3-guide.md:ae094c7f8c": "COPY to a write path with a `SELECT ...` ellipsis (export idiom)",

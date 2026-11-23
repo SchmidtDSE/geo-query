@@ -299,7 +299,7 @@ Check the dataset's STAC description — it will note when DISTINCT is required.
 
 Raster hex assets hold one value per cell at their native resolution. To report at a coarser resolution, GROUP BY the parent column with the reducer the STAC description names. Totals such as carbon or population are per-cell sums: use SUM, never AVG.
 ```sql
--- Continuous values (carbon, biomass, elevation) → SUM or AVG
+-- Totals (carbon, biomass, population) → SUM; other values → the STAC reducer
 SELECT h8, h0, SUM(value) AS total
 FROM read_parquet('<hex>')
 GROUP BY h8, h0
