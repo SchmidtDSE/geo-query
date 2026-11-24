@@ -9,13 +9,15 @@
 #   instead: ~12 for 8 agent sessions. The HAProxy in bench-proxy.yaml gives
 #   each query to an idle pod; a plain Service would pick pods at random and
 #   queue queries behind busy ones.
-# - Off between flights: replicas stays 0 in this file. A flight runs
+# - replicas stays 0 in this file. A flight runs
 #     kubectl -n biodiversity set image deployment/bench-duckdb-mcp \
 #       server=ghcr.io/schmidtdse/geo-query:<tag>@sha256:<digest of the build under test>
 #     kubectl -n biodiversity set env deployment/bench-duckdb-mcp APP_VERSION=<tag>
 #     kubectl -n biodiversity scale deployment/bench-duckdb-mcp --replicas=12
 #     kubectl -n biodiversity scale deployment/bench-mcp-proxy --replicas=1
-#   and scales both back to 0 when it ends. Like dev, the image here is a floor, not
+#   Scaling both back to 0 afterwards is optional tidying: the pods request
+#   2Gi and 250m, inside NRP's small-pod exemption, so idle ones are within
+#   the usage policy. Like dev, the image here is a floor, not
 #   a record of what the last flight ran; each transcript records /version.
 # - Auth: its own token Secret, bench-mcp-tokens, holding one key
 #   (glen-benchmark) with the same value as the Jobs' glen-benchmark-mcp
@@ -69,11 +71,11 @@ spec:
       containers:
       - name: server
         # A floor: each flight sets the build under test (see the header).
-        image: ghcr.io/schmidtdse/geo-query:v0.9.10@sha256:d6c3637f4d7f1c3c63b46f587fb10150e730df16f07f5653ae758f3a94cc48db
+        image: ghcr.io/schmidtdse/geo-query:v0.10.0@sha256:a41f1da0149bb7d7a150f5840fa918e6b6dd7b09abb2727844ffeee740cdcdc6
         imagePullPolicy: IfNotPresent
         env:
         - name: APP_VERSION
-          value: "v0.9.10"
+          value: "v0.10.0"
         - name: STAC_CATALOG_URL
           value: "https://s3-west.nrp-nautilus.io/public-data/stac/catalog.json"
         # One query at a time per pod (#530); more replicas carry the load.

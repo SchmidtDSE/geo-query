@@ -17,8 +17,7 @@
 # - The proxy finds the bench pods through the headless Service below, which
 #   lists only Ready pods, and also checks /readyz itself, so a pod the memory
 #   guard drains stops getting new queries.
-# - Off between flights, like bench-duckdb-mcp: replicas stays 0 here. A flight
-#   scales both:
+# - replicas stays 0 here, like bench-duckdb-mcp. A flight scales both:
 #     kubectl -n biodiversity scale deployment/bench-mcp-proxy --replicas=1
 # - Timeouts sit above the clients' 10-minute MCP timeout, so the client, not
 #   the proxy, decides when to give up.
