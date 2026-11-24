@@ -101,12 +101,14 @@ glen-benchmark flights.
   is what this avoids. When overlapping queries run a pod out of memory, the
   kernel kills the biggest process, which is the heavy query.
 - **Throughput is replicas plus routing.** A proxy sends each query to an idle
-  replica and holds it until one is free. `k8s/bench-proxy.yaml` (HAProxy,
-  #539) does this for bench. Prod, dev and schmidtdse go through NRP's shared
-  ingress with `leastconn`, which avoids busy pods but does not hold a query
-  for an idle one. Each needs the same proxy before it turns `QUERY_WORKERS` on.
-- Until workers are on, the memory guard (`spillguard.py`, #428) drains the pod
-  and interrupts queries before the cgroup OOM. #551 removes it.
+  replica and holds it until one is free. Every deployment has one: HAProxy
+  (#539) in `k8s/bench-proxy.yaml`, `k8s/dev-proxy.yaml`, `k8s/proxy.yaml`
+  (prod) and `k8s/schmidtdse-proxy.yaml`. Each public Service selects its
+  proxy, and the proxy finds the MCP pods through a headless Service.
+- Workers turn on with the first release that carries #552. Dev runs them now;
+  prod and schmidtdse set `QUERY_WORKERS=1`, which v0.10.0 ignores. Until a
+  deployment runs workers, the memory guard (`spillguard.py`, #428) drains the
+  pod and interrupts queries before the cgroup OOM. #551 removes it.
 - For benchmark load, add replicas for the flight and scale back after it.
   Never shrink per-query resources to fit more queries on a pod.
 - Never raise a pod's resource requests above what it uses to protect it from

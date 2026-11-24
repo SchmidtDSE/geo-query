@@ -69,11 +69,11 @@ spec:
       containers:
       - name: server
         # A floor: each flight sets the build under test (see the header).
-        image: ghcr.io/schmidtdse/geo-query:v0.9.10@sha256:d6c3637f4d7f1c3c63b46f587fb10150e730df16f07f5653ae758f3a94cc48db
+        image: ghcr.io/schmidtdse/geo-query:v0.10.0@sha256:a41f1da0149bb7d7a150f5840fa918e6b6dd7b09abb2727844ffeee740cdcdc6
         imagePullPolicy: IfNotPresent
         env:
         - name: APP_VERSION
-          value: "v0.9.10"
+          value: "v0.10.0"
         - name: STAC_CATALOG_URL
           value: "https://s3-west.nrp-nautilus.io/public-data/stac/catalog.json"
         # One query at a time per pod (#530); more replicas carry the load.
