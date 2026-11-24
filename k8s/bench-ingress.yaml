@@ -1,0 +1,30 @@
+# Public route to bench, for benchmark agents outside NRP (the cirrus k3s agent
+# running DSE models). glen-benchmark's Jobs in biodiversity keep using the
+# in-cluster name; both reach the same idle-routing proxy (bench-proxy.yaml).
+# Every route except /healthz and /version needs a token from bench-mcp-tokens.
+# No browser clients, so no CORS. Timeouts sit above the clients' 10-minute MCP
+# timeout, so the client decides when to give up.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: bench-mcp-server-duckdb-ingress
+  namespace: biodiversity
+  annotations:
+    haproxy-ingress.github.io/timeout-client: "660s"
+    haproxy-ingress.github.io/timeout-server: "660s"
+spec:
+  ingressClassName: haproxy
+  tls:
+    - hosts:
+        - bench-duckdb-mcp.nrp-nautilus.io
+  rules:
+    - host: bench-duckdb-mcp.nrp-nautilus.io
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: bench-mcp-server-duckdb
+                port:
+                  number: 8000

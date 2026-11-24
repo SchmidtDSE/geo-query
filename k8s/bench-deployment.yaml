@@ -1,9 +1,10 @@
 # Benchmark-only MCP server (#530). glen-benchmark flights use it; live users
 # never reach it.
 #
-# - Separate from live use: no Ingress, only the in-cluster Service in
-#   bench-service.yaml. glen-benchmark's Jobs run in biodiversity, and NRP drops
-#   pod traffic between namespaces, which is why this lives here.
+# - Separate from live use: its own Service (bench-service.yaml) and token.
+#   glen-benchmark's Jobs run in biodiversity, and NRP drops pod traffic between
+#   namespaces, which is why this lives here. Agents outside NRP use the public
+#   route in bench-ingress.yaml.
 # - One query at a time per pod (MCP_QUERY_CONCURRENCY=1), so heavy benchmark
 #   queries never share a pod's memory (#530). Scale replicas for the flight
 #   instead: ~12 for 8 agent sessions. The HAProxy in bench-proxy.yaml gives
