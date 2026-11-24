@@ -1,4 +1,5 @@
-# In-cluster only: the benchmark server has no Ingress (bench-deployment.yaml).
+# glen-benchmark's Jobs use this name in-cluster; agents outside NRP use the
+# public bench-ingress.yaml, which points here.
 # Traffic goes through the HAProxy in bench-proxy.yaml, which gives each query
 # to an idle bench pod.
 apiVersion: v1
