@@ -82,10 +82,16 @@ spec:
         # One query at a time per pod (#530); more replicas carry the load.
         - name: MCP_QUERY_CONCURRENCY
           value: "1"
+        # Tile URLs use the public route (bench-ingress.yaml), so they resolve for
+        # agents outside NRP as well as for Jobs in biodiversity.
         - name: MCP_PUBLIC_BASE_URL
-          value: "http://bench-mcp-server-duckdb.biodiversity.svc.cluster.local:8000"
+          value: "https://bench-duckdb-mcp.nrp-nautilus.io"
         - name: MCP_AUTH_TOKENS_DIR
           value: /etc/mcp-tokens
+        # Hex tiles stay public, as on prod: their data is in the public-output
+        # bucket, and glen fetches metadata.json without a token.
+        - name: MCP_AUTH_PUBLIC_TILES
+          value: "true"
         # Pod's cgroup memory limit → DuckDB memory_limit (~80%) (#270).
         - name: POD_MEMORY_LIMIT
           valueFrom:
