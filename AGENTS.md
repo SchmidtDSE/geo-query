@@ -69,7 +69,7 @@ The MCP server runs on the NRP Nautilus Kubernetes cluster, namespace `biodivers
 
 - **Prod:** `https://duckdb-mcp.nrp-nautilus.io` — `k8s/deployment.yaml`
 - **Dev:** `https://dev-duckdb-mcp.nrp-nautilus.io` — `k8s/dev-deployment.yaml`; must stay ≥2 replicas so cross-pod bugs surface here before prod
-- **Bench:** in-cluster only (`bench-mcp-server-duckdb:8000`, no Ingress) — `k8s/bench-deployment.yaml`; glen-benchmark flights only, one query per pod, scaled up for a flight and to 0 after it
+- **Bench:** in-cluster only (`bench-mcp-server-duckdb:8000`, no Ingress) — `k8s/bench-deployment.yaml`; glen-benchmark flights only, one query per pod, scaled up for a flight. Idle bench pods are within NRP's usage policy (small requests, large limits), so scaling down after a flight is tidying, not a requirement
 
 Replicas, resources, env (e.g. `STAC_CATALOG_URL`) and ingress timeouts live in `k8s/`;
 read them there, or from the live cluster, rather than restating them here.
@@ -109,7 +109,8 @@ glen-benchmark flights.
   prod and schmidtdse set `QUERY_WORKERS=1`, which v0.10.0 ignores. Until a
   deployment runs workers, the memory guard (`spillguard.py`, #428) drains the
   pod and interrupts queries before the cgroup OOM. #551 removes it.
-- For benchmark load, add replicas for the flight and scale back after it.
+- For benchmark load, add replicas for the flight. Scaling back afterwards is
+  optional: an idle pod requests only 2Gi and 250m, which NRP never checks.
   Never shrink per-query resources to fit more queries on a pod.
 - Never raise a pod's resource requests above what it uses to protect it from
   node memory pressure. That breaks NRP's usage policy. When a run needs more
