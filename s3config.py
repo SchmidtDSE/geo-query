@@ -27,7 +27,7 @@ https→s3 rewrite of caller SQL) and the tile subsystem
                   "https_prefix": "https://minio.example.edu/",
                   "s3_prefix": "s3://",
                   "secret": {"endpoint": "minio.example.edu",
-                             "scope": "s3://mirror-"}}]'
+                             "scope": "s3://mirror-data"}}]'
 
 The fully STAC-native end state carries endpoint/routing on the asset itself
 (storage extension); this registry is the server-side stand-in until then.

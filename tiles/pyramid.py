@@ -13,6 +13,8 @@ from typing import List
 
 import duckdb
 
+from dbconfig import first_row
+
 from tiles.tile_math import content_hash
 
 # DuckDB's ST_AsMVT emits a single layer named "layer" (see probe in
@@ -381,7 +383,7 @@ def _read_json_marker(con: duckdb.DuckDBPyConnection, uri: str):
                 return None
             with open(uri, "r") as f:
                 return json.loads(f.read().strip())
-        row = con.sql(f"SELECT content FROM read_text('{uri}')").fetchone()
+        row = first_row(con.sql(f"SELECT content FROM read_text('{uri}')"))
         if row is None:
             return None
         return json.loads(row[0])
@@ -527,9 +529,9 @@ def prepare_hex_tiles(
     if finest_res is None:
         # Read one cell from the user SQL and ask H3 what its resolution is.
         # Avoids forcing the LLM to invent a finest_res — the data already knows.
-        probe = con.sql(
+        probe = first_row(con.sql(
             f'SELECT h3_get_resolution({_ident(h3_column)}) FROM ({sql}) LIMIT 1'
-        ).fetchone()
+        ))
         if probe is None or probe[0] is None:
             raise ValueError(
                 "Cannot auto-detect finest_res: user SQL returned no rows, or "
@@ -674,13 +676,13 @@ def build_hex_tiles(
 
     bounds_t0 = time.perf_counter()
     finest_uri = f"{output_uri}res={finest_res}/**/*.parquet"
-    bounds_row = con.sql(
+    bounds_row = first_row(con.sql(
         f"SELECT "
         f"MIN(h3_cell_to_lat(h)) AS s, MAX(h3_cell_to_lat(h)) AS n, "
         f"MIN(h3_cell_to_lng(h)) AS w, MAX(h3_cell_to_lng(h)) AS e, "
         f"COUNT(*) AS ct "
         f"FROM read_parquet('{finest_uri}')"
-    ).fetchone()
+    ))
     w, s, e, n, feature_count = bounds_row[2], bounds_row[0], bounds_row[3], bounds_row[1], bounds_row[4]
     bounds_seconds = time.perf_counter() - bounds_t0
 
@@ -705,10 +707,10 @@ def build_hex_tiles(
             # MEAN comes free from the same scan as MIN/MAX and drives the
             # log-scale suggestion below (#238).
             uri = f"{output_uri}res={res}/**/*.parquet"
-            row = con.sql(
+            row = first_row(con.sql(
                 f'SELECT MIN({_ident(col)}) AS mn, MAX({_ident(col)}) AS mx, AVG({_ident(col)}) AS av '
                 f"FROM read_parquet('{uri}')"
-            ).fetchone()
+            ))
             by_res[str(res)] = {
                 "min": _jsonable(row[0]),
                 "max": _jsonable(row[1]),

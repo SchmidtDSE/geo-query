@@ -32,7 +32,7 @@ def test_fast_query_is_not_interrupted():
     con = duckdb.connect(":memory:")
     clock = QueryClock(con, "SELECT 42", 5, caller="test")
     try:
-        assert con.sql("SELECT 42").fetchone() == (42,)
+        assert con.sql("SELECT 42").fetchall()[0] == (42,)
     finally:
         clock.stop()
     assert not clock.expired.is_set()

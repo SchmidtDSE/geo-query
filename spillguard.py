@@ -194,7 +194,7 @@ def instance_memory(conn) -> int | None:
         return None  # closed
     try:
         return int(cur.sql("SELECT coalesce(sum(memory_usage_bytes), 0) "
-                           "FROM duckdb_memory() WHERE tag <> 'EXTERNAL_FILE_CACHE'").fetchone()[0])
+                           "FROM duckdb_memory() WHERE tag <> 'EXTERNAL_FILE_CACHE'").fetchall()[0][0])
     except Exception:
         return None
     finally:
@@ -291,7 +291,7 @@ class SpillGuard:
     def register(self, conn) -> str | None:
         """Track *conn* by its spill directory, so the guard can interrupt it."""
         try:
-            temp_dir = conn.sql("SELECT current_setting('temp_directory')").fetchone()[0]
+            temp_dir = conn.sql("SELECT current_setting('temp_directory')").fetchall()[0][0]
         except Exception:
             return None
         if temp_dir:

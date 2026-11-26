@@ -224,6 +224,37 @@ def disable_persistent_secrets_sql() -> str:
     return "SET allow_persistent_secrets=false"
 
 
+def first_row(rel):
+    """The first row of a DuckDB relation, or None if it has none.
+
+    DuckDB 2.0 removed `Relation.fetchone()`, and `execute(...).fetchone()`
+    leaves the connection busy until the result is drained, so use this.
+    """
+    rows = rel.fetchall()
+    return rows[0] if rows else None
+
+
+def pin_sql_semantics(conn) -> None:
+    """Keep the SQL that caller queries see the same as on DuckDB 1.5 (#443).
+
+    DuckDB 2.0 changed two things the guidance and the models rely on, and
+    caller SQL cannot SET them back once the connection is locked:
+    - The spheroid functions (`ST_Length_Spheroid` and friends) raise until
+      `geometry_always_xy` is set. `false` keeps the 1.5 lat/lon reading that
+      h3-guide.md teaches with `ST_FlipCoordinates`. Moving to `true` (the 2.1
+      default) is a guidance change and needs a benchmark gate.
+    - Arrow lambdas (`x -> x + 1`) are a binder error. Models may still write
+      them, so the old syntax stays enabled; `lambda x: ...` works as well.
+    """
+    conn.sql("SET lambda_syntax='ENABLE_SINGLE_ARROW'")
+    # The setting exists only once spatial is loaded.
+    spatial = conn.sql(
+        "SELECT count(*) FROM duckdb_settings() WHERE name = 'geometry_always_xy'"
+    ).fetchall()[0][0]
+    if spatial:
+        conn.sql("SET geometry_always_xy=false")
+
+
 def lock_down(conn, extra_dirs=()) -> None:
     """Restrict `conn` to remote storage plus its own spill directory, then
     freeze its configuration.
@@ -234,7 +265,8 @@ def lock_down(conn, extra_dirs=()) -> None:
     local TILE_BUCKET_BASE in tests). Raises on failure — a connection that
     cannot be locked must not run caller SQL.
     """
-    temp_dir = conn.sql("SELECT current_setting('temp_directory')").fetchone()[0]
+    pin_sql_semantics(conn)
+    temp_dir = conn.sql("SELECT current_setting('temp_directory')").fetchall()[0][0]
     allowed = list(_REMOTE_PREFIXES)
     for d in (temp_dir, *extra_dirs):
         if d and "://" not in d:

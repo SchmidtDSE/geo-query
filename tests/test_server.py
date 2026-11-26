@@ -176,7 +176,7 @@ class TestDatabaseIsolation:
         with get_isolated_db() as conn:
             assert conn is not None
             # Verify it's a DuckDB connection by running a simple query
-            result = conn.sql("SELECT 1 as test").fetchone()
+            result = conn.sql("SELECT 1 as test").fetchall()[0]
             assert result[0] == 1
     
     def test_get_isolated_db_closes_connection(self):
@@ -195,7 +195,7 @@ class TestDatabaseIsolation:
                 # Check if table was created
                 result = conn.sql("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
                 # DuckDB uses different system tables, so just verify connection works
-                result = conn.sql("SELECT 1").fetchone()
+                result = conn.sql("SELECT 1").fetchall()[0]
                 assert result[0] == 1
 
 
@@ -487,15 +487,15 @@ class TestS3Credentials:
     def test_ssl_disabled_for_rook_endpoint(self):
         """Rook/Ceph internal endpoints get USE_SSL false."""
         with get_isolated_db(s3_key="K", s3_secret="S", s3_endpoint="rook-ceph-rgw-nautiluss3.rook") as conn:
-            row = conn.sql("SELECT scope FROM duckdb_secrets() WHERE name='client_s3'").fetchone()
+            row = conn.sql("SELECT scope FROM duckdb_secrets() WHERE name='client_s3'").fetchall()
             # Secret was created — existence is sufficient; SSL value is in the secret config
-            assert row is not None
+            assert row
 
     def test_ssl_enabled_for_external_endpoint(self):
         """Non-rook endpoints (e.g. minio) get USE_SSL true."""
         with get_isolated_db(s3_key="K", s3_secret="S", s3_endpoint="minio.example.org") as conn:
-            row = conn.sql("SELECT name FROM duckdb_secrets() WHERE name='client_s3'").fetchone()
-            assert row is not None
+            row = conn.sql("SELECT name FROM duckdb_secrets() WHERE name='client_s3'").fetchall()
+            assert row
 
     def test_connection_isolation(self):
         """A secret in one connection is not visible in a concurrent connection."""
@@ -550,15 +550,15 @@ class TestAnonymousBYOBucket:
 
     def test_anon_scope_routes_only_scoped_paths(self):
         """A scoped anonymous secret wins for its prefix; other paths keep the default."""
-        with get_isolated_db(s3_endpoint="minio.example.org", s3_scope="s3://public-") as conn:
+        with get_isolated_db(s3_endpoint="minio.example.org", s3_scope="s3://public-carbon") as conn:
             def which(p):
-                return conn.sql(f"SELECT name FROM which_secret('{p}', 's3')").fetchone()[0]
+                return conn.sql(f"SELECT name FROM which_secret('{p}', 's3')").fetchall()[0][0]
             assert which("s3://public-carbon/x.parquet") == "client_s3"
             assert which("s3://private-foo/x.parquet") == "s3"
 
     def test_query_with_anon_endpoint_succeeds(self):
         """query accepts an anonymous endpoint (no creds) without error."""
-        result = query("SELECT 7 as n", s3_endpoint="minio.example.org", s3_scope="s3://public-")
+        result = query("SELECT 7 as n", s3_endpoint="minio.example.org", s3_scope="s3://public-carbon")
         assert "7" in result
 
     def test_endpoint_with_partial_creds_raises(self):
@@ -587,7 +587,7 @@ class TestUnscopedClientRouting:
         return [r[0] for r in conn.sql("SELECT name FROM duckdb_secrets()").fetchall()]
 
     def _which(self, conn, path):
-        return conn.sql(f"SELECT name FROM which_secret('{path}', 's3')").fetchone()[0]
+        return conn.sql(f"SELECT name FROM which_secret('{path}', 's3')").fetchall()[0][0]
 
     def test_unscoped_creds_disable_default_secret(self):
         with get_isolated_db(s3_key="K", s3_secret="S") as conn:
@@ -608,7 +608,7 @@ class TestUnscopedClientRouting:
             assert self._which(conn, "s3://anything-else/y.parquet") == "client_s3"
 
     def test_scoped_client_keeps_default_secret(self):
-        with get_isolated_db(s3_endpoint="minio.example.org", s3_scope="s3://public-") as conn:
+        with get_isolated_db(s3_endpoint="minio.example.org", s3_scope="s3://public-carbon") as conn:
             names = self._names(conn)
             assert "client_s3" in names
             assert "s3" in names
@@ -645,7 +645,7 @@ class TestClientS3RegionUrlStyle:
     def _secret_string(self, conn):
         return conn.sql(
             "SELECT secret_string FROM duckdb_secrets() WHERE name='client_s3'"
-        ).fetchone()[0]
+        ).fetchall()[0][0]
 
     def test_region_set_on_secret(self):
         with get_isolated_db(
@@ -697,18 +697,18 @@ class TestSourceRegistrySecrets:
             "S3_SOURCES",
             '[{"name": "campus_minio", "https_prefix": "https://minio.example.edu/",'
             ' "s3_prefix": "s3://", "secret": {"endpoint": "minio.example.edu",'
-            ' "scope": "s3://mirror-"}}]',
+            ' "scope": "s3://mirror-data"}}]',
         )
         with get_isolated_db() as conn:
             assert "campus_minio" in self._names(conn)
             row = conn.sql(
                 "SELECT name FROM which_secret('s3://mirror-data/x.parquet', 's3')"
-            ).fetchone()
+            ).fetchall()[0]
             assert row[0] == "campus_minio"
             # Paths outside the scope keep the deployment default.
             row = conn.sql(
                 "SELECT name FROM which_secret('s3://public-data/x.parquet', 's3')"
-            ).fetchone()
+            ).fetchall()[0]
             assert row[0] == "s3"
 
 
@@ -717,8 +717,8 @@ class TestDefaultEndpoint:
     Lets the codebase be deployed as a data-access head pointed at any backend via env."""
 
     def _s3_secret_string(self, conn):
-        row = conn.sql("SELECT secret_string FROM duckdb_secrets() WHERE name='s3'").fetchone()
-        return row[0] if row else ""
+        row = conn.sql("SELECT secret_string FROM duckdb_secrets() WHERE name='s3'").fetchall()
+        return row[0][0] if row else ""
 
     def test_default_falls_back_to_rook(self, monkeypatch):
         monkeypatch.delenv("S3_DEFAULT_ENDPOINT", raising=False)
@@ -1377,7 +1377,7 @@ class TestMarkerReadsUncached:
         con = marker_connection()
         for name in ("enable_external_file_cache", "enable_http_metadata_cache",
                      "enable_object_cache"):
-            assert con.sql(f"SELECT current_setting('{name}')").fetchone()[0] is False, name
+            assert con.sql(f"SELECT current_setting('{name}')").fetchall()[0][0] is False, name
 
     def _spy(self, monkeypatch, module):
         from tiles.db import marker_connection
@@ -1799,7 +1799,7 @@ class TestSpillGuardInQuery:
                     def sql(self, q):
                         if q.startswith("SELECT current_setting"):
                             if guard_stops[0]:
-                                stopped.add(db.sql(q).fetchone()[0])
+                                stopped.add(db.sql(q).fetchall()[0][0])
                             return db.sql(q)
                         raise duckdb.InterruptException("INTERRUPT Error: Interrupted!")
                 yield Proxy()

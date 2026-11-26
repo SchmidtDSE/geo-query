@@ -327,7 +327,7 @@ def query(sql_query: str, s3_key: str = None, s3_secret: str = None, s3_endpoint
     clock = None
     try:
         with get_isolated_db(s3_key=s3_key, s3_secret=s3_secret, s3_endpoint=s3_endpoint, s3_scope=s3_scope, s3_region=s3_region, s3_url_style=s3_url_style) as db:
-            spill_dir = db.sql("SELECT current_setting('temp_directory')").fetchone()[0]
+            spill_dir = db.sql("SELECT current_setting('temp_directory')").fetchall()[0][0]
             limit = query_time_limit()
             if limit:
                 clock = QueryClock(db, sql_query, limit, caller=CALLER.get())
@@ -353,7 +353,7 @@ BEFORE writing any SQL:
 
 Private buckets are read with credentials the deployment supplies. Never pass s3_key or s3_secret, and never ask the user for keys.
 For an anonymous public source (e.g. a read-only mirror), pass s3_endpoint alone (no key/secret) with s3_scope — useful to read a mirror like s3://public-* from a backup endpoint when the primary is unavailable.
-Use s3_scope (e.g. 's3://private-wyoming' or 's3://public-') so DuckDB routes those paths to your endpoint rather than the server default; supply it whenever a query mixes sources.
+Use s3_scope (a whole bucket or path, e.g. 's3://private-wyoming'; a partial name like 's3://private-' matches nothing) so DuckDB routes those paths to your endpoint rather than the server default; supply it whenever a query mixes sources.
 For an anonymous AWS-hosted bucket, also pass s3_region (e.g. 'us-west-2') and, if the bucket needs it, s3_url_style ('path' by default, or 'vhost'); the defaults suit Ceph/MinIO.
 WITHOUT s3_scope, your endpoint applies to EVERY s3:// path in the query and the server-default endpoint is disabled for this request — fine for a query touching only your bucket, wrong for a query mixing your bucket with catalog data. When mixing, always pass s3_scope.
 {TOOL_INJECTED_CONTEXT}

@@ -6,7 +6,7 @@ mcp>=1.29,<2
 # lags new releases. Unpinned, CI/image builds pull the latest DuckDB for which
 # `INSTALL h3 FROM community` may have no candidate, breaking every tile path.
 # Bump only once community h3 ships for the target version.
-duckdb==1.5.6
+duckdb==2.0.1
 # Pinned: `query` renders results through pandas -> tabulate, and the pandas major
 # version silently changes that rendering. Under pandas 3 a str-dtype column holds
 # missing values as the FLOAT nan, so one NULL makes tabulate type the whole column
