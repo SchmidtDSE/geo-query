@@ -55,8 +55,8 @@ class _FakeConn:
         temp_dir = self.temp_dir
 
         class R:
-            def fetchone(self):
-                return (temp_dir,)
+            def fetchall(self):
+                return [(temp_dir,)]
         return R()
 
     def interrupt(self):
@@ -68,8 +68,8 @@ class _FakeConn:
         class C:
             def sql(self, _q):
                 class R:
-                    def fetchone(self):
-                        return (mem,)
+                    def fetchall(self):
+                        return [(mem,)]
                 return R()
 
             def close(self):
@@ -413,7 +413,7 @@ def test_instance_memory_reads_a_running_query_and_skips_a_closed_one():
     w = threading.Thread(target=watch)
     w.start()
     con.sql("SELECT count(*) FROM (SELECT md5(i::VARCHAR) s, count(*) "
-            "FROM range(2000000) t(i) GROUP BY s)").fetchone()
+            "FROM range(2000000) t(i) GROUP BY s)").fetchall()[0]
     done.set()
     w.join()
     assert peak[0] > 1 << 20
@@ -428,9 +428,9 @@ def test_instance_memory_leaves_out_the_external_file_cache(tmp_path):
     path = str(tmp_path / "f.parquet")
     con = duckdb.connect(":memory:")
     con.sql(f"COPY (SELECT range i, md5(range::VARCHAR) s FROM range(3000000)) TO '{path}'")
-    con.sql(f"SELECT count(*) FROM read_parquet('{path}') WHERE s LIKE 'a%'").fetchone()
+    con.sql(f"SELECT count(*) FROM read_parquet('{path}') WHERE s LIKE 'a%'").fetchall()[0]
     cached = con.sql("SELECT coalesce(sum(memory_usage_bytes), 0) FROM duckdb_memory() "
-                     "WHERE tag = 'EXTERNAL_FILE_CACHE'").fetchone()[0]
+                     "WHERE tag = 'EXTERNAL_FILE_CACHE'").fetchall()[0][0]
     if cached < 100_000:
         pytest.skip("this DuckDB does not cache local Parquet reads")
     # The idle connection holds little besides the cache.
@@ -476,7 +476,7 @@ def test_real_memory_interrupt_stops_the_newer_query(tmp_path):
         d = guard.register(c)
         try:
             c.sql(f"SELECT count(*) FROM (SELECT md5(i::VARCHAR) s, count(*) "
-                  f"FROM range({rows}) t(i) GROUP BY s)").fetchone()
+                  f"FROM range({rows}) t(i) GROUP BY s)").fetchall()[0]
             outcome[name] = "done"
         except duckdb.InterruptException:
             outcome[name] = guard.was_interrupted(d)
@@ -532,8 +532,8 @@ def test_no_trim_while_a_query_runs_and_at_most_every_30s():
     class Conn:
         def sql(self, _):
             class R:
-                def fetchone(self):
-                    return ("/tmp/duckdb-x",)
+                def fetchall(self):
+                    return [("/tmp/duckdb-x",)]
             return R()
 
     conn = Conn()

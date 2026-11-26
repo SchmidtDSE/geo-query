@@ -361,7 +361,7 @@ class TestRegisterHexTiles:
             mismatches = h3_conn.sql(
                 f"SELECT COUNT(*) FROM read_parquet('{uri}', hive_partitioning=true) "
                 "WHERE h0::BIGINT != h3_cell_to_parent(h, 0)::BIGINT"
-            ).fetchone()[0]
+            ).fetchall()[0][0]
             assert mismatches == 0, f"res={res} h0 mismatch"
 
     def test_writes_pyramid_partitions(self, local_bucket, h3_conn):
@@ -662,12 +662,13 @@ class TestBuildTileConnection:
         con = build_tile_connection()
         try:
             # Proxy: LOAD must have succeeded if these functions are callable.
-            con.sql("SELECT h3_latlng_to_cell(37.8, -122.3, 5)").fetchone()
-            con.sql("SELECT ST_Point(0, 0)").fetchone()
+            con.sql("SELECT h3_latlng_to_cell(37.8, -122.3, 5)").fetchall()[0]
+            con.sql("SELECT ST_Point(0, 0)").fetchall()[0]
             # httpfs loaded — confirm by presence of its settings. (With
-            # autoload off, current_setting('s3_region') fails even when
-            # httpfs is loaded, so read the settings table instead.)
-            n = con.sql("SELECT count(*) FROM duckdb_settings() WHERE name = 's3_region'").fetchone()[0]
+            # autoload off, current_setting() fails even when httpfs is
+            # loaded, and duckdb_extensions() reads the locked filesystem, so
+            # read the settings table instead.)
+            n = con.sql("SELECT count(*) FROM duckdb_settings() WHERE name = 's3_list_concurrency'").fetchall()[0][0]
             assert n == 1
         finally:
             con.close()
@@ -682,8 +683,8 @@ class TestBuildTileConnection:
             con.close()
 
     def _s3_secret_string(self, con):
-        row = con.sql("SELECT secret_string FROM duckdb_secrets() WHERE name='s3'").fetchone()
-        return row[0] if row else ""
+        row = con.sql("SELECT secret_string FROM duckdb_secrets() WHERE name='s3'").fetchall()
+        return row[0][0] if row else ""
 
     def test_default_endpoint_falls_back_to_rook(self, monkeypatch):
         """Unset env keeps the NRP Ceph internal endpoint (back-compat)."""
@@ -754,7 +755,7 @@ class TestPyramidMathCorrectness:
             uri = str(local_bucket / "hex" / result["hash"] / f"res={res}" / "**" / "*.parquet")
             total = h3_conn.sql(
                 f"SELECT SUM(count) FROM read_parquet('{uri}', hive_partitioning=true)"
-            ).fetchone()[0]
+            ).fetchall()[0][0]
             assert total == len(points), f"res={res}: SUM(count)={total}, expected {len(points)}"
 
     def test_sum_total_at_parent_equals_total_at_finest(self, local_bucket, h3_conn):
@@ -772,7 +773,7 @@ class TestPyramidMathCorrectness:
             uri = str(local_bucket / "hex" / result["hash"] / f"res={res}" / "**" / "*.parquet")
             total = h3_conn.sql(
                 f'SELECT SUM("val") FROM read_parquet(\'{uri}\', hive_partitioning=true)'
-            ).fetchone()[0]
+            ).fetchall()[0][0]
             assert total == 25.0, f"res={res}: SUM(val)={total}, expected 25.0"
 
     def test_min_at_parent_is_min_of_children(self, local_bucket, h3_conn):
@@ -857,7 +858,7 @@ class TestPyramidMathCorrectness:
         finest_uri = str(local_bucket / "hex" / result["hash"] / "res=5" / "**" / "*.parquet")
         child_count = h3_conn.sql(
             f"SELECT COUNT(DISTINCT h) FROM read_parquet('{finest_uri}', hive_partitioning=true)"
-        ).fetchone()[0]
+        ).fetchall()[0][0]
         assert child_count == 2, f"fixture must produce 2 distinct h5 cells, got {child_count}"
 
         parent_uri = str(local_bucket / "hex" / result["hash"] / "res=4" / "**" / "*.parquet")
@@ -953,7 +954,7 @@ class TestBuildConnectionThreads:
         from tiles.db import build_tile_connection
         con = build_tile_connection(threads=7)
         try:
-            assert int(con.sql("SELECT current_setting('threads')").fetchone()[0]) == 7
+            assert int(con.sql("SELECT current_setting('threads')").fetchall()[0][0]) == 7
         finally:
             con.close()
 
@@ -962,7 +963,7 @@ class TestBuildConnectionThreads:
         monkeypatch.setenv("TILE_THREADS", "5")
         con = build_tile_connection()
         try:
-            assert int(con.sql("SELECT current_setting('threads')").fetchone()[0]) == 5
+            assert int(con.sql("SELECT current_setting('threads')").fetchall()[0][0]) == 5
         finally:
             con.close()
 

@@ -20,7 +20,7 @@ class TestGetSources:
             "S3_SOURCES",
             '[{"name": "campus_minio", "https_prefix": "https://minio.example.edu/",'
             ' "s3_prefix": "s3://", "secret": {"endpoint": "minio.example.edu",'
-            ' "scope": "s3://mirror-"}}]',
+            ' "scope": "s3://mirror-data"}}]',
         )
         sources = {s["name"]: s for s in s3config.get_sources()}
         assert "campus_minio" in sources
@@ -100,7 +100,7 @@ class TestSourceSecretSql:
         monkeypatch.setenv(
             "S3_SOURCES",
             '[{"name": "my-mirror!", "secret": {"endpoint": "minio.example.edu",'
-            ' "scope": "s3://mirror-"}}]',
+            ' "scope": "s3://mirror-data"}}]',
         )
         stmt = [s for s in s3config.source_secret_sql() if "minio.example.edu" in s][0]
         assert "SECRET my_mirror_ " in stmt  # name sanitized to an identifier

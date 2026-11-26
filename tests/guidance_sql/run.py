@@ -82,9 +82,10 @@ def make_connection():
         except Exception:
             pass  # already installed in the image / runner extension dir
         con.sql(f"LOAD {ext}")
-    # Anonymous, prefix-scoped reads. The mirror is fast and public; the Ceph
-    # external endpoint is the fallback for datasets not mirrored. Neither needs
-    # a credential — the fixture only maps to public paths.
+    # Anonymous reads. The mirror is fast and public, scoped to its bucket; the
+    # Ceph external endpoint takes every other s3:// path (a scope matches whole
+    # path components since DuckDB 2.0, so 's3://public-' would match nothing).
+    # Neither needs a credential — the fixture only maps to public paths.
     con.sql(
         "CREATE SECRET scoop (TYPE S3, KEY_ID '', SECRET '', "
         "ENDPOINT 's3.us-west-2.amazonaws.com', REGION 'us-west-2', "
@@ -93,7 +94,7 @@ def make_connection():
     )
     con.sql(
         "CREATE SECRET ceph_ext (TYPE S3, ENDPOINT 's3-west.nrp-nautilus.io', "
-        "URL_STYLE 'path', USE_SSL 'true', SCOPE 's3://public-')"
+        "URL_STYLE 'path', USE_SSL 'true')"
     )
     con.sql("SET THREADS=4")  # external endpoint is happier at low concurrency
     # Mirror the server preamble (server.py): a DuckDB statistics_propagation bug
@@ -102,6 +103,10 @@ def make_connection():
     # per connection; the harness must too, so CI executes the same plan the server
     # runs (else a real, server-runnable example would fail here, or vice versa).
     con.sql("SET disabled_optimizers='statistics_propagation'")
+    # Same SQL semantics as the server's connections (axis order, arrow lambdas).
+    sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2]))
+    from dbconfig import pin_sql_semantics
+    pin_sql_semantics(con)
     return con
 
 

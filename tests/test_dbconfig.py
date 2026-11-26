@@ -254,7 +254,7 @@ def test_lock_down_still_spills(tmp_path, monkeypatch):
     for stmt in spill_sql():
         con.sql(stmt)
     lock_down(con)
-    n = con.sql("SELECT count(*) FROM (SELECT i % 3000000 AS k, sum(i) FROM range(20000000) t(i) GROUP BY k)").fetchone()[0]
+    n = con.sql("SELECT count(*) FROM (SELECT i % 3000000 AS k, sum(i) FROM range(20000000) t(i) GROUP BY k)").fetchall()[0][0]
     assert n == 3000000
 
 
@@ -280,8 +280,34 @@ def test_lock_down_keeps_loaded_extensions_usable(tmp_path, monkeypatch):
         con.sql(stmt)
     lock_down(con)
     con.sql("LOAD h3")
-    assert con.sql("SELECT h3_latlng_to_cell(37.8, -122.3, 6)").fetchone()[0] > 0
-    assert con.sql("SELECT current_setting('lock_configuration')").fetchone()[0] is True
+    assert con.sql("SELECT h3_latlng_to_cell(37.8, -122.3, 6)").fetchall()[0][0] > 0
+    assert con.sql("SELECT current_setting('lock_configuration')").fetchall()[0][0] is True
+
+
+def test_lock_down_keeps_pre_2_sql_semantics(tmp_path, monkeypatch):
+    """Spheroid functions and arrow lambdas work for caller SQL after the lock (#443)."""
+    monkeypatch.setenv("DUCKDB_TEMP_ROOT", str(tmp_path))
+    con = _duckdb.connect(":memory:")
+    con.sql(disable_persistent_secrets_sql())
+    con.sql("LOAD spatial")
+    for stmt in spill_sql():
+        con.sql(stmt)
+    lock_down(con)
+    # lat/lon order, as h3-guide.md teaches: flip the stored lon/lat first.
+    metres = con.sql(
+        "SELECT ST_Length_Spheroid(ST_FlipCoordinates('LINESTRING(-122 37, -121 37)'::GEOMETRY))"
+    ).fetchall()[0][0]
+    assert 88_000 < metres < 90_000
+    assert con.sql("SELECT list_transform([1, 2], x -> x + 1)").fetchall()[0][0] == [2, 3]
+
+
+def test_lock_down_without_spatial(tmp_path, monkeypatch):
+    monkeypatch.setenv("DUCKDB_TEMP_ROOT", str(tmp_path))
+    con = _duckdb.connect(":memory:")
+    for stmt in spill_sql():
+        con.sql(stmt)
+    lock_down(con)
+    assert con.sql("SELECT 1").fetchall()[0] == (1,)
 
 
 def test_locked_hint_only_for_locked_setup_errors():

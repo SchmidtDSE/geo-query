@@ -68,7 +68,7 @@ def _has_spill_files(root) -> bool:
 class TestSharedSetup:
     def test_isolated_db_runs_and_closes(self):
         with isolated_db("") as conn:
-            assert conn.sql("SELECT 1").fetchone()[0] == 1
+            assert conn.sql("SELECT 1").fetchall()[0][0] == 1
         with pytest.raises(Exception):
             conn.sql("SELECT 1")
 

@@ -61,7 +61,7 @@ class TestDatabaseExtensions:
                 conn.sql("INSTALL spatial")
                 conn.sql("LOAD spatial")
                 # Try a spatial function
-                result = conn.sql("SELECT ST_Point(0, 0) as point").fetchone()
+                result = conn.sql("SELECT ST_Point(0, 0) as point").fetchall()[0]
                 assert result is not None
             except Exception as e:
                 # Some environments may not support spatial
@@ -74,7 +74,7 @@ class TestDatabaseExtensions:
                 conn.sql("INSTALL httpfs")
                 conn.sql("LOAD httpfs")
                 # Extension should load without error
-                result = conn.sql("SELECT 1").fetchone()
+                result = conn.sql("SELECT 1").fetchall()[0]
                 assert result[0] == 1
             except Exception as e:
                 pytest.skip(f"HTTPFS extension not available: {e}")

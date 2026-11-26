@@ -18,6 +18,7 @@ import anyio
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 
+from dbconfig import first_row
 from tiles.db import marker_connection
 from tiles.pyramid import lock_is_stale, read_failed, read_lock
 from tiles.tile_math import (
@@ -78,7 +79,7 @@ def _read_metadata(con, namespace: str, name: str):
         if not uri.startswith("s3://") and not uri.startswith("http"):
             with open(uri, "r") as f:
                 return json.loads(f.read().strip())
-        row = con.cursor().sql(f"SELECT content FROM read_text('{uri}')").fetchone()
+        row = first_row(con.cursor().sql(f"SELECT content FROM read_text('{uri}')"))
         if row is None:
             return None
         return json.loads(row[0])
@@ -302,7 +303,7 @@ def _build_tile_sql(namespace: str, name: str, z: int, x: int, y: int,
 def _run_tile_query(con, sql: str) -> bytes:
     """Run the tile SQL on a fresh cursor and return raw MVT bytes (or empty)."""
     cur = con.cursor()
-    row = cur.sql(sql).fetchone()
+    row = first_row(cur.sql(sql))
     if row is None or row[0] is None:
         return b""
     return bytes(row[0])

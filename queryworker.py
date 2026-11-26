@@ -182,8 +182,8 @@ def finish_connection(conn, s3_key: str = None, s3_secret: str = None, s3_endpoi
     #   - anonymous:    only s3_endpoint given, no creds (a public mirror,
     #     e.g. MinIO/source.coop during a Ceph outage — #264). We key off
     #     s3_endpoint here because an anonymous bucket has no other signal.
-    # Pass s3_scope (e.g. 's3://public-') so this secret applies only to those
-    # paths and everything else keeps the deployment default below.
+    # Pass s3_scope (a bucket, e.g. 's3://private-wyoming') so this secret
+    # applies only to those paths and everything else keeps the deployment default below.
     credentialed = bool(s3_key and s3_secret)
     has_client = credentialed or bool(s3_endpoint)
     if has_client:
@@ -374,7 +374,7 @@ def _worker_main() -> None:
     cfg = json.loads(line)
     try:
         conn = prepare_connection(cfg["setup_sql"], cfg.get("extra_extensions", ()))
-        spill_dir = conn.sql("SELECT current_setting('temp_directory')").fetchone()[0]
+        spill_dir = conn.sql("SELECT current_setting('temp_directory')").fetchall()[0][0]
     except Exception as e:
         send({"failed": f"{type(e).__name__}: {e}"})
         os._exit(1)
