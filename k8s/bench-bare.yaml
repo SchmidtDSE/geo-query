@@ -1,0 +1,345 @@
+# Guidance-free variant of the benchmark MCP server: arm B of the guidance
+# ablation (glen-benchmark#192). Arm A is bench itself (bench-deployment.yaml).
+#
+# The two arms run the same image, code, data, tools, token Secret, sizing and
+# idle-routing proxy. They differ only in three guidance files, which a
+# ConfigMap mounts over the image's own:
+# - h3-guide.md and query-optimization.md are empty, so the `query` description
+#   keeps only the tool text and the hardcoded CRITICAL SQL RULES block in
+#   server.py (no tables, read_parquet, STAC paths verbatim, mask before
+#   aggregate), plus two section headings that are now empty.
+# - assistant-role.md is empty, so the `geospatial-analyst` MCP prompt is too.
+# - query-setup.md (the setup SQL) and the STAC catalog are unchanged.
+# Files rather than GUIDANCE_DROP, because GUIDANCE_DROP removes `##` sections
+# only and would leave the h3-guide's opening paragraph (the hex-only rule).
+#
+# Before a run, check that both arms report the same image in /version.
+#
+# replicas stay 0 in this file, so re-applying it during a flight scales arm B
+# to zero (it did on 2026-11-28). Mid-flight, apply only the object you changed
+# (kubectl apply -f - with that document), or scale back up right after.
+# A flight runs
+#     kubectl apply -f k8s/bench-bare.yaml
+#     kubectl -n biodiversity set image deployment/bench-bare-duckdb-mcp \
+#       server=<the image bench-duckdb-mcp runs>
+#     kubectl -n biodiversity scale deployment/bench-bare-duckdb-mcp --replicas=<n>
+#     kubectl -n biodiversity scale deployment/bench-bare-mcp-proxy --replicas=1
+# Clients use bench-bare-mcp-server-duckdb:8000 in-cluster, or the public route
+# https://bench-bare-duckdb-mcp.nrp-nautilus.io (Ingress at the end of this
+# file) from outside NRP. Tile URLs point at bench's public route
+# (MCP_PUBLIC_BASE_URL), which serves any bench tile from S3.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: bench-bare-guidance
+  namespace: biodiversity
+data:
+  h3-guide.md: ""
+  query-optimization.md: ""
+  assistant-role.md: ""
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: bench-bare-duckdb-mcp
+  namespace: biodiversity
+spec:
+  replicas: 0
+  selector:
+    matchLabels:
+      app: bench-bare-duckdb-mcp
+  template:
+    metadata:
+      labels:
+        app: bench-bare-duckdb-mcp
+    spec:
+      # The server never calls the Kubernetes API; a mounted token was readable
+      # through DuckDB in the 2026-11-06 incident.
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      volumes:
+      - name: mcp-tokens
+        secret:
+          secretName: bench-mcp-tokens
+          defaultMode: 0440
+      # Spill space: the root filesystem is read-only.
+      - name: bare-guidance
+        configMap:
+          name: bench-bare-guidance
+      - name: tmp
+        emptyDir:
+          sizeLimit: 50Gi
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: topology.kubernetes.io/region
+                    operator: In
+                    values: ["us-west"]
+      containers:
+      - name: server
+        # A floor: each flight sets the build under test (see the header).
+        image: ghcr.io/schmidtdse/geo-query:v0.10.0@sha256:a41f1da0149bb7d7a150f5840fa918e6b6dd7b09abb2727844ffeee740cdcdc6
+        imagePullPolicy: IfNotPresent
+        env:
+        - name: APP_VERSION
+          value: "v0.10.0"
+        - name: STAC_CATALOG_URL
+          value: "https://s3-west.nrp-nautilus.io/public-data/stac/catalog.json"
+        # One query at a time per pod (#530); more replicas carry the load.
+        - name: MCP_QUERY_CONCURRENCY
+          value: "1"
+        # Tile URLs use the public route (bench-ingress.yaml), so they resolve for
+        # agents outside NRP as well as for Jobs in biodiversity.
+        - name: MCP_PUBLIC_BASE_URL
+          value: "https://bench-duckdb-mcp.nrp-nautilus.io"
+        - name: MCP_AUTH_TOKENS_DIR
+          value: /etc/mcp-tokens
+        # Hex tiles stay public, as on prod: their data is in the public-output
+        # bucket, and glen fetches metadata.json without a token.
+        - name: MCP_AUTH_PUBLIC_TILES
+          value: "true"
+        # Pod's cgroup memory limit → DuckDB memory_limit (~80%) (#270).
+        - name: POD_MEMORY_LIMIT
+          valueFrom:
+            resourceFieldRef:
+              containerName: server
+              resource: limits.memory
+        # Ephemeral-storage limit → DuckDB max_temp_directory_size (#423).
+        - name: POD_EPHEMERAL_LIMIT
+          valueFrom:
+            resourceFieldRef:
+              containerName: server
+              resource: limits.ephemeral-storage
+        volumeMounts:
+        - name: mcp-tokens
+          mountPath: /etc/mcp-tokens
+          readOnly: true
+        - name: tmp
+          mountPath: /tmp
+        # Arm B: stub guidance files over the image's own.
+        - name: bare-guidance
+          mountPath: /app/h3-guide.md
+          subPath: h3-guide.md
+          readOnly: true
+        - name: bare-guidance
+          mountPath: /app/query-optimization.md
+          subPath: query-optimization.md
+          readOnly: true
+        - name: bare-guidance
+          mountPath: /app/assistant-role.md
+          subPath: assistant-role.md
+          readOnly: true
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop: ["ALL"]
+        resources:
+          # Same sizing as prod and dev: small requests per NRP's usage policy
+          # (AGENTS.md → Sizing), high limits for one heavy query.
+          requests:
+            memory: 2Gi
+            cpu: 250m
+          limits:
+            memory: 160Gi
+            cpu: 64
+        ports:
+        - containerPort: 8000
+        readinessProbe:
+          httpGet:
+            path: /readyz
+            port: 8000
+          # Start checking right away: the server listens ~5 s after the container
+          # starts, and a failed readiness check only keeps the pod out of the
+          # Service. 15 s here left new pods idle for ~11 s.
+          initialDelaySeconds: 2
+          periodSeconds: 5
+          timeoutSeconds: 2
+          failureThreshold: 1
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: 8000
+          initialDelaySeconds: 30
+          periodSeconds: 30
+          timeoutSeconds: 10
+          failureThreshold: 6
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: bench-bare-mcp-proxy
+  namespace: biodiversity
+data:
+  haproxy.cfg: |
+    global
+      log stdout format raw local0 info
+      maxconn 4000
+      # Room to read the tool name from a request body with long SQL.
+      tune.bufsize 65536
+
+    defaults
+      mode http
+      log global
+      option httplog
+      timeout connect 5s
+      timeout http-request 60s
+      timeout client 20m
+      timeout server 20m
+      timeout queue 20m
+      timeout http-keep-alive 60s
+      # Drop a queued request whose client has gone, instead of sending it to
+      # a pod later to run for nobody (#540).
+      option abortonclose
+
+    resolvers kube
+      parse-resolv-conf
+      hold valid 5s
+      accepted_payload_size 8192
+
+    frontend mcp
+      bind :8000
+      option http-buffer-request
+      acl is_query req.body -m reg "\"name\"[[:space:]]*:[[:space:]]*\"query\""
+      use_backend query_slots if is_query
+      default_backend other_calls
+
+    # One query per pod: a call goes to an idle pod, or waits here for one.
+    backend query_slots
+      balance leastconn
+      option httpchk GET /readyz
+      default-server check inter 5s fall 1 rise 1 resolvers kube init-addr none maxconn 1
+      server-template mcp 48 bench-bare-duckdb-mcp-pods.biodiversity.svc.cluster.local:8000
+
+    # Calls that do not take a query slot.
+    backend other_calls
+      balance leastconn
+      option httpchk GET /readyz
+      default-server check inter 5s fall 1 rise 1 resolvers kube init-addr none
+      server-template mcp 48 bench-bare-duckdb-mcp-pods.biodiversity.svc.cluster.local:8000
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: bench-bare-mcp-proxy
+  namespace: biodiversity
+spec:
+  replicas: 0
+  selector:
+    matchLabels:
+      app: bench-bare-mcp-proxy
+  template:
+    metadata:
+      labels:
+        app: bench-bare-mcp-proxy
+      annotations:
+        # Bump to roll the proxy after changing the ConfigMap.
+        bench-bare-mcp-proxy/config-rev: "2"
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 99
+        runAsGroup: 99
+        seccompProfile:
+          type: RuntimeDefault
+      volumes:
+      - name: config
+        configMap:
+          name: bench-bare-mcp-proxy
+      containers:
+      - name: haproxy
+        image: docker.io/library/haproxy:3.0.31-alpine@sha256:7430e63d3052198b18a40665b59a5826bc428e8bceb0c561d82258149ef855ee
+        imagePullPolicy: IfNotPresent
+        args: ["haproxy", "-W", "-db", "-f", "/usr/local/etc/haproxy/haproxy.cfg"]
+        volumeMounts:
+        - name: config
+          mountPath: /usr/local/etc/haproxy
+          readOnly: true
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop: ["ALL"]
+        resources:
+          requests:
+            memory: 128Mi
+            cpu: 100m
+          limits:
+            memory: 512Mi
+            cpu: "1"
+        ports:
+        - containerPort: 8000
+        readinessProbe:
+          tcpSocket:
+            port: 8000
+          periodSeconds: 5
+        livenessProbe:
+          tcpSocket:
+            port: 8000
+          initialDelaySeconds: 10
+          periodSeconds: 30
+---
+# Headless: DNS returns the Ready bench pods, which the proxy resolves itself.
+apiVersion: v1
+kind: Service
+metadata:
+  name: bench-bare-duckdb-mcp-pods
+  namespace: biodiversity
+spec:
+  clusterIP: None
+  selector:
+    app: bench-bare-duckdb-mcp
+  ports:
+    - protocol: TCP
+      port: 8000
+      targetPort: 8000
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: bench-bare-mcp-server-duckdb
+  namespace: biodiversity
+spec:
+  selector:
+    app: bench-bare-mcp-proxy
+  ports:
+    - protocol: TCP
+      port: 8000
+      targetPort: 8000
+---
+# Public route to arm B, for benchmark agents outside NRP (the cirrus k3s agent
+# running DSE models), as bench-ingress.yaml does for arm A. Every route except
+# /healthz and /version needs a token from bench-mcp-tokens.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: bench-bare-mcp-server-duckdb-ingress
+  namespace: biodiversity
+  annotations:
+    haproxy-ingress.github.io/timeout-client: "660s"
+    haproxy-ingress.github.io/timeout-server: "660s"
+spec:
+  ingressClassName: haproxy
+  tls:
+    - hosts:
+        - bench-bare-duckdb-mcp.nrp-nautilus.io
+  rules:
+    - host: bench-bare-duckdb-mcp.nrp-nautilus.io
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: bench-bare-mcp-server-duckdb
+                port:
+                  number: 8000
