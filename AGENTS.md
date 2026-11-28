@@ -100,15 +100,24 @@ glen-benchmark flights.
   worker waits for the next query, so start-up is not paid per query. Overlap
   is what this avoids. When overlapping queries run a pod out of memory, the
   kernel kills the biggest process, which is the heavy query.
+- **An OOM kill takes the whole container on NRP (#562).** NRP's kubelets set
+  `memory.oom.group=1` on every container, so when the kernel OOM-kills the
+  worker, it kills the server in the same container too. The worker's
+  `oom_score_adj=1000` still picks the worker as the victim, but the replica
+  restarts (about a minute, with 503s from the proxy) instead of reporting
+  `MEMORY_KILLED_MESSAGE`. Only a node with `singleProcessOOMKill: true`, or
+  workers in a separate container, keeps the server up. In practice these kills
+  come from node memory pressure, not from the pod's own limit.
 - **Throughput is replicas plus routing.** A proxy sends each query to an idle
-  replica and holds it until one is free. Every deployment has one: HAProxy
-  (#539) in `k8s/bench-proxy.yaml`, `k8s/dev-proxy.yaml`, `k8s/proxy.yaml`
-  (prod) and `k8s/schmidtdse-proxy.yaml`. Each public Service selects its
-  proxy, and the proxy finds the MCP pods through a headless Service.
-- Workers turn on with the first release that carries #552. Dev runs them now;
-  prod and schmidtdse set `QUERY_WORKERS=1`, which v0.10.0 ignores. Until a
-  deployment runs workers, the memory guard (`spillguard.py`, #428) drains the
-  pod and interrupts queries before the cgroup OOM. #551 removes it.
+  replica and holds it until one is free. Every multi-replica deployment has
+  one: HAProxy (#539) in `k8s/bench-proxy.yaml`, `k8s/dev-proxy.yaml`,
+  `k8s/proxy.yaml` (prod) and `k8s/schmidtdse-proxy.yaml`. Each public Service
+  selects its proxy, and the proxy finds the MCP pods through a headless
+  Service. geo-workflows runs a single replica with no proxy.
+- Workers run on dev, prod and schmidtdse (v0.11.0). geo-workflows and bench
+  (v0.10.0) do not, so the memory guard (`spillguard.py`, #428) still drains
+  those pods and interrupts queries before the cgroup OOM. #551 removes it once
+  every deployment runs workers.
 - For benchmark load, add replicas for the flight. Scaling back afterwards is
   optional: an idle pod requests only 2Gi and 250m, which NRP never checks.
   Never shrink per-query resources to fit more queries on a pod.

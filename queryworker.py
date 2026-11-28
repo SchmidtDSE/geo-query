@@ -9,7 +9,11 @@ memory guard (#428) and the idle trim (#536) tried to do from inside:
 - a query past its time limit, or one whose client has gone, is stopped with
   SIGKILL, which works even inside a GEOS call that ignores DuckDB's interrupt;
 - each worker raises its own oom_score_adj to 1000, so when the pod or node
-  runs out of memory the kernel kills a worker, not the server.
+  runs out of memory the kernel picks a worker, not the server. Where the
+  container's cgroup has memory.oom.group=1, as on NRP (#562), the kernel then
+  kills every process in the container, the server included, and the replica
+  restarts. MEMORY_KILLED_MESSAGE reaches the caller only where the kill stops
+  at the worker.
 
 Queries run one at a time, and one prepared worker waits for the next query
 so start-up stays off the request path. A heavy query gets the whole pod.
@@ -349,7 +353,8 @@ def render_result(result, secrets=()) -> str:
 # ---------------------------------------------------------------------------
 def _raise_oom_score() -> None:
     """Make this process the kernel OOM killer's first choice (1000 is the most
-    likely), so a query that outgrows the pod or node costs itself, not the server."""
+    likely), so a query that outgrows the pod or node is the one killed. With
+    memory.oom.group=1 (NRP, #562) the kill still takes the whole container."""
     try:
         with open("/proc/self/oom_score_adj", "w") as f:
             f.write("1000")
