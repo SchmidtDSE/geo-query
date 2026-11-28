@@ -15,7 +15,10 @@
 #
 # Before a run, check that both arms report the same image in /version.
 #
-# replicas stay 0 in this file. A flight runs
+# replicas stay 0 in this file, so re-applying it during a flight scales arm B
+# to zero (it did on 2026-11-28). Mid-flight, apply only the object you changed
+# (kubectl apply -f - with that document), or scale back up right after.
+# A flight runs
 #     kubectl apply -f k8s/bench-bare.yaml
 #     kubectl -n biodiversity set image deployment/bench-bare-duckdb-mcp \
 #       server=<the image bench-duckdb-mcp runs>
