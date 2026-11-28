@@ -22,7 +22,7 @@ SELECT 100 * SUM(a.fa * COALESCE(b.fb, 0) * h3_cell_area(a.h10, 'km^2'))
 FROM a LEFT JOIN b USING (h10, h0);
 ```
 
-Never join a res-10 layer on its `h8` column, and never threshold a fraction (`= 0`, `> 0`): the share of A outside B uses `1 − fb`. If A is coarser than B (ACE is native res 8), use the land-children recipe under Problem 3, which is only for native res-8 or res-9 features.
+Never join a res-10 layer on its `h8` column. The denominator comes from A alone: `LEFT JOIN` B, never an inner join, and put any region mask in `a` so the numerator stays inside A's cells. The share of A outside B is `1 − Σw` (`100 − pct`), never a `= 0` or `> 0` test. If A's native resolution is coarser than B's (res 8 or 9 against res 10), use the land-children recipe under Problem 3.
 
 ## The H3 Data Model
 <!-- prov: issue=#92,#93,#549 models=unrecorded added=2026-04-21 cell=background tier=core -->
@@ -69,7 +69,7 @@ FROM (SELECT DISTINCT state, h8, h0 FROM read_parquet('<hex>'))
 GROUP BY state;
 ```
 
-When the scope is a name or feature id on a global `h0=*` dataset, restrict `h0` first — see *Scoping by name or feature id* in query-optimization.md.
+When the scope is a name or feature id on a global `h0=*` dataset, filter on that attribute — see *Scoping by name or feature id* in query-optimization.md.
 
 `h3_cell_area()` takes a resolution column (`h3_cell_area(h6, 'km^2')`) and exactly one of three units: `'km^2'`, `'m^2'`, `'rads^2'`. It has no acre unit, and any other unit string, including `'km²'`, is an error. For acres, compute in `km^2` and multiply by 247.105 (or `m^2` by 0.000247105):
 
@@ -315,7 +315,7 @@ GROUP BY class;
 
 **Overlaying a feature with a partial-coverage layer — the weight is fixed by the feature's geometry, and it is the same weight at every resolution.** *(Skip unless you are intersecting one layer with another that only partly covers its cells — e.g. "what percent of each habitat class is conserved".)* Reduce the overlay layer to one coverage fraction per cell, then weight each of the feature's cells by:
 
-- **polygon or raster feature → area:** `h3_cell_area(hN, 'km^2')`, or the region land grid's `land_area_km2` where cells are partly ocean or border.
+- **polygon or raster feature → area:** `h3_cell_area(hN, 'km^2')`. At res 8 or 9, where cells are partly ocean or border, use `land_area_km2` from the region's land-grid rollup; the res-10 land grid has no such column, so use `h3_cell_area` there.
 - **line feature → length, never area:** dedup the feature's `length_*` and length-weight the fraction — see Problem 4.
 - **presence-only layer, no fraction column → the presence flag, averaged over the finer layer's cells:** presence at the finer resolution *is* the fraction.
 
@@ -340,7 +340,7 @@ ORDER BY pct_conserved;
 
 Asking about **one** class ("what percent of hardwood woodland is conserved") is the same query with `WHERE f.whr13num = <code>` — keep the `frac × weight × area` product. Joining to the *distinct conserved cells* instead (a `SEMI JOIN` on `(h10, h0)`) counts every partly-conserved cell as fully conserved and overstates the percentage.
 
-**Feature coarser than the overlay layer — only for a feature whose native resolution is 8 or 9** (it has no `h10` column; e.g. ACE). A res-10 asset that also carries `h8` is native res 10: use *Percent of A that is B*. Weights assets are published per resolution (`…-hex-weights-res9`, `…-hex-weights-res8`) and the coarser ones are already averaged over the fine cells inside each parent, so no rollup is needed. Weight each coarse cell by its **land** area — `land_area_km2`, published on the region's land-grid rollup at the same resolution (California: `ca30x30-ecoregion`, assets `ecoregion-hex-res9` and `ecoregion-hex-res8`) — since coastal and border cells are only partly land. Join the land grid and `LEFT JOIN` the weights asset to it.
+**Feature coarser than the overlay layer — only for a feature whose native resolution is 8 or 9** (it has no `h10` column). A res-10 asset that also carries `h8` is native res 10: use *Percent of A that is B*. Weights assets are published per resolution (`…-hex-weights-res9`, `…-hex-weights-res8`) and the coarser ones are already averaged over the fine cells inside each parent, so no rollup is needed. Weight each coarse cell by its **land** area — `land_area_km2`, published on the region's land-grid rollup at the same resolution (California: `ca30x30-ecoregion`, assets `ecoregion-hex-res9` and `ecoregion-hex-res8`) — since coastal and border cells are only partly land. Join the land grid and `LEFT JOIN` the weights asset to it.
 
 ```sql
 -- only for a feature whose native resolution is 8 (no h10 column)
@@ -360,7 +360,7 @@ The land grid has a row for every land cell in the region, so it is both the wei
 
 When no weights asset is published at the coarse resolution — or the finer layer carries **only presence**, no fraction column — roll the fine layer up yourself: a coarse parent's value is the **mean over its res-10 land children**, `SUM(child value) / <children per parent>` (`7` per resolution step res-10 → res-9, `49` for two res-10 → res-8). It is the same reduction whether the child value is a weight, a coverage fraction, or a 0/1 presence flag — presence at the finer resolution *is* the fraction, so average it. Reduce multiple units overlapping **one** fine cell with `MAX` (or `LEAST(SUM(w), 1)`) first; but never `MAX`/`MIN`/`EXISTS`/`DISTINCT` **across children** — that scores a whole parent as covered when a single child is, and the overstatement grows with the children per parent.
 
-Averaging a res-10 presence flag over the land children of a res-8 feature — the ACE × wetlands case, no GAP column anywhere:
+Averaging a res-10 presence flag over the land children of a res-8 feature:
 
 ```sql
 -- only for a feature whose native resolution is 8 (no h10 column)

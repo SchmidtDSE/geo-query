@@ -170,11 +170,11 @@ EXECUTABLE = {
         "<STAC_PADUS_HEX_PATH>": PADUS,
         "<STAC_CARBON_HEX_PATH>": CARBON_PARKS,
     },
-    # scope-by-h0-set then filter by feature id (#402), the bosl-pri-eez-area shape.
+    # filter a global h0=* dataset by feature id (#402, #563), the bosl-pri-eez-area shape.
     #   The only mapping that cannot be pinned to one partition: the `h0=*` glob and
     #   `data_00.parquet` are literal in the block — that layout is what it teaches.
     #   Still cheap, since binding globs one prefix and reads one footer.
-    "query-optimization.md:48c32ed53a": {"<bucket>": "public-high-seas", "<dataset>": "iho/eez"},
+    "query-optimization.md:c39dabd889": {"<bucket>": "public-high-seas", "<dataset>": "iho/eez"},
     # no-data before SUM/AVG (#402). Was deferred as "dataset not yet mapped": no
     #   dataset in the catalog has a column named `value`, so the block could never
     #   bind as written. `<value>` is now a placeholder like the `<hex>` beside it,

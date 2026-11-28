@@ -42,25 +42,16 @@ JOIN read_parquet('<STAC_CARBON_HEX_PATH>') c
 ```
 
 ### Scoping by name or feature id (no region mask)
-<!-- prov: issue=#163 models=unrecorded added=2026-06-07 cell=bosl-pri-eez-area tier=core -->
+<!-- prov: issue=#163,#563 models=gpt-oss,gemma added=2026-11-28 cell=bosl-pri-eez-area,glob-brazil-first-protected tier=core -->
 
-To filter a global `…/hex/h0=*/…` dataset by a name or `_cng_fid` and there is no region-mask hex to join, first restrict `h0` to the region, then apply the attribute filter:
-
-- **Known coordinates** (island centroids, a city, bbox corners): build the `h0` set with `h3_latlng_to_cell(lat, lng, 0)` per point and `UNNEST(h3_grid_disk(h0, 1))` to include neighbouring res-0 cells. For large or multi-part features, supply every known point or the bbox corners — one centroid can miss partitions the feature reaches.
-- **Known name only**: look the feature up in the dataset's GeoParquet asset (one row per feature) to read its centroid/bbox, convert to `h0`, then query the hex.
+To filter a global `…/hex/h0=*/…` dataset by a name or `_cng_fid` with no region-mask hex to join, filter on the dataset's own attribute. Never derive an `h0` set from typed coordinates or a hand-written list; when you want an `h0` prefilter, take it from the data with the same attribute filter.
 
 ```sql
-WITH h0s AS (
-  SELECT DISTINCT d
-  FROM (VALUES (19.282,166.647),(16.728,-169.534),(6.383,-162.417),
-               (0.807,-176.617),(-0.374,-159.997)) AS i(lat,lng),
-       UNNEST(h3_grid_disk(h3_latlng_to_cell(lat,lng,0),1)) AS t(d)
-)
 SELECT SUM(h3_cell_area(h8, 'km^2')) AS area_km2
 FROM (
   SELECT DISTINCT h8, h0
   FROM read_parquet('s3://<bucket>/<dataset>/hex/h0=*/data_00.parquet')
-  WHERE h0 IN (SELECT d FROM h0s) AND _cng_fid IN (201, 246, 243, 142, 90)
+  WHERE _cng_fid IN (201, 246, 243, 142, 90)
 );
 ```
 
@@ -162,3 +153,13 @@ of the measure.)* The surviving rows are then rarely a random sample: incomplete
 columns track geography, feature type or source vintage. State the covered fraction
 alongside the number. If coverage is concentrated in part of the study area, say the
 breakdown is unavailable for the whole rather than giving a number with a caveat.
+
+## 10. One-line rules
+<!-- prov: issue=#563 models=qwen3.6-35b-a3b,inkling-2-mini,deepseek-nimbus,glm-5.3-flash,mimo-v2.6-flash,gpt-oss,gemma-small,gemma,qwen3-small added=2026-11-28 cell=orig-vents-near-ebsa,car-20-native-bird-hotspots,car-21-native-reptile-hotspots,glob-brazil-first-protected tier=core -->
+
+- Select by the dataset's own attribute and exclude the few codes that don't belong; never type long code lists or `h0` sets.
+- `h3_cell_to_parent(cell, res)` takes the target resolution (`h3_cell_to_parent(h10, 8)`), not a number of steps.
+- A cell has `7^(fine − coarse)` children at a finer resolution (49 from res 8 to res 10).
+- Between OGC:CRS84 and EPSG:4326 use `ST_SetCRS`, never `ST_Transform`: the coordinates are the same, and `ST_Transform` swaps the axes.
+- Top X% by value: cut at `quantile_cont(value, 1 - X/100)` over distinct cells.
+- Never cross-join two layers to compute distances; use `h3_grid_disk` (H3 guide, *Distance Between Hexes*).
