@@ -21,9 +21,10 @@
 #       server=<the image bench-duckdb-mcp runs>
 #     kubectl -n biodiversity scale deployment/bench-bare-duckdb-mcp --replicas=<n>
 #     kubectl -n biodiversity scale deployment/bench-bare-mcp-proxy --replicas=1
-# Clients use bench-bare-mcp-server-duckdb:8000 in-cluster. There is no public
-# route. Tile URLs point at bench's public route (MCP_PUBLIC_BASE_URL), which
-# serves any bench tile from S3.
+# Clients use bench-bare-mcp-server-duckdb:8000 in-cluster, or the public route
+# https://bench-bare-duckdb-mcp.nrp-nautilus.io (Ingress at the end of this
+# file) from outside NRP. Tile URLs point at bench's public route
+# (MCP_PUBLIC_BASE_URL), which serves any bench tile from S3.
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -311,3 +312,31 @@ spec:
     - protocol: TCP
       port: 8000
       targetPort: 8000
+---
+# Public route to arm B, for benchmark agents outside NRP (the cirrus k3s agent
+# running DSE models), as bench-ingress.yaml does for arm A. Every route except
+# /healthz and /version needs a token from bench-mcp-tokens.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: bench-bare-mcp-server-duckdb-ingress
+  namespace: biodiversity
+  annotations:
+    haproxy-ingress.github.io/timeout-client: "660s"
+    haproxy-ingress.github.io/timeout-server: "660s"
+spec:
+  ingressClassName: haproxy
+  tls:
+    - hosts:
+        - bench-bare-duckdb-mcp.nrp-nautilus.io
+  rules:
+    - host: bench-bare-duckdb-mcp.nrp-nautilus.io
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: bench-bare-mcp-server-duckdb
+                port:
+                  number: 8000
