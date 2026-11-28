@@ -148,6 +148,12 @@ EXECUTABLE = {
             "'Estuarine and Marine Wetland')"
         ),
     },
+    # headline coarse-join reducer (#563): res-10 presence averaged up to res 8.
+    #   NWI carries only h10, so this also binds the h3_cell_to_parent() form.
+    "h3-guide.md:93647e05fe": {
+        "<res-10 presence hex>": NWI,
+        "<presence filter>": "state_code = 'CA' AND WETLAND_TYPE = 'Freshwater Emergent Wetland'",
+    },
     # parent-resolution join (#402): a fine dataset's pre-computed h6 column joined
     #   to a coarse dataset indexed at h6. Binds `elevation` on GEBCO and
     #   `feature_type` on geomorphology, so a rename on either side fails here.
