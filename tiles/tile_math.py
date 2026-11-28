@@ -144,11 +144,16 @@ def zoom_to_h3_res(
 _LAYOUT_VERSION = "v3-iterative"
 
 
-def content_hash(sql: str, finest_res: int, min_res: int, agg: str, zoom_offset: int) -> str:
+def content_hash(sql: str, finest_res: int, min_res: int, agg: str, zoom_offset: int,
+                 sources: str = "") -> str:
     """Deterministic 16-char hex hash of the registration inputs.
 
     Used as the <name> component of tile URLs so identical registrations
-    dedupe naturally and URLs are CDN-friendly.
+    dedupe naturally and URLs are CDN-friendly. `sources` fingerprints any
+    mutable files the SQL reads (#571); it is left out when empty, so the
+    hash of SQL over immutable data is unchanged.
     """
     canonical = f"{_LAYOUT_VERSION}\0{sql}\0{finest_res}\0{min_res}\0{agg}\0{zoom_offset}"
+    if sources:
+        canonical += f"\0{sources}"
     return hashlib.sha1(canonical.encode("utf-8")).hexdigest()[:16]

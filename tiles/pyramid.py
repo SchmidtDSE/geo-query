@@ -3,11 +3,13 @@
 register_hex_tiles() materializes a partitioned parquet pyramid to object storage.
 Tile requests read directly from the pyramid — no coordination needed.
 """
+import hashlib
 import json
 import os
 import re
 import sys
 import time
+import uuid
 from decimal import Decimal
 from typing import List
 
@@ -179,6 +181,58 @@ def build_pyramid_statements(
 
 def _bucket_base() -> str:
     return os.environ.get("TILE_BUCKET_BASE", "s3://public-output").rstrip("/")
+
+
+# Buckets whose objects can be rewritten in place: anyone may write to
+# public-output, so the same SQL text can read different data later (#571).
+# Catalog data is immutable and needs no fingerprint. TILE_CACHE_MUTABLE_BUCKETS
+# (comma-separated bucket names) replaces the default; the deployment's own
+# tile bucket always counts.
+_STRING_LITERAL = re.compile(r"'((?:[^']|'')*)'")
+
+
+def _mutable_buckets() -> list[str]:
+    raw = os.environ.get("TILE_CACHE_MUTABLE_BUCKETS", "public-output")
+    return [b.strip().strip("/") for b in raw.split(",") if b.strip().strip("/")]
+
+
+def mutable_source_paths(sql: str) -> list[str]:
+    """String literals in *sql* that name a path in a mutable bucket, as
+    s3://<bucket>/..., http(s)://<host>/<bucket>/..., or under TILE_BUCKET_BASE."""
+    prefixes = [re.escape(_bucket_base() + "/")]
+    for b in _mutable_buckets():
+        prefixes += [rf"s3://{re.escape(b)}/", rf"https?://[^/']+/{re.escape(b)}/"]
+    pattern = re.compile("^(?:" + "|".join(prefixes) + ")")
+    found = {lit.replace("''", "'") for lit in _STRING_LITERAL.findall(sql)}
+    return sorted(p for p in found if pattern.match(p))
+
+
+def source_fingerprint(con, sql: str) -> str:
+    """A fingerprint of the mutable files *sql* reads, for the tile cache key (#571).
+
+    Empty when the SQL reads no mutable path, so its cache key is unchanged.
+    Otherwise each path (globs included) is listed with read_blob, which reports
+    size and last-modified time without reading the content. If a path cannot
+    be listed, or a file reports no modified time, the registration gets a
+    one-off key: it is built fresh rather than risk serving another file's tiles.
+    """
+    paths = mutable_source_paths(sql)
+    if not paths:
+        return ""
+    parts = []
+    for path in paths:
+        quoted = path.replace("'", "''")
+        try:
+            rows = con.sql(
+                f"SELECT filename, size, epoch_us(last_modified) "
+                f"FROM read_blob('{quoted}') ORDER BY filename"
+            ).fetchall()
+        except Exception:
+            rows = None
+        if not rows or any(r[2] is None for r in rows):
+            return f"uncached:{uuid.uuid4().hex}"
+        parts.append(f"{path}\n{rows!r}")
+    return hashlib.sha1("\n".join(parts).encode("utf-8")).hexdigest()
 
 
 def _public_base_url() -> str:
@@ -556,7 +610,8 @@ def prepare_hex_tiles(
                 "(or use agg='COUNT')"
             )
 
-    h = content_hash(sql=sql, finest_res=finest_res, min_res=min_res, agg=agg, zoom_offset=zoom_offset)
+    h = content_hash(sql=sql, finest_res=finest_res, min_res=min_res, agg=agg,
+                     zoom_offset=zoom_offset, sources=source_fingerprint(con, sql))
     paths = tile_paths_for_hash(h)
     output_uri = paths["output_uri"]
 
