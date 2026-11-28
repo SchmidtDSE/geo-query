@@ -43,6 +43,8 @@ spec:
           - cacao-internal
           - coasts
           - datacenters
+          # The hosted glen apps (SchmidtDSE/glen#541).
+          - glen-maps
           - naturetrace
           - padus
           - roadless-rule
