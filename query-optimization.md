@@ -13,6 +13,9 @@ where `hX` is the finest resolution shared by both datasets (h8, h9, etc. — ch
 schema). Omitting `AND t1.h0 = t2.h0` causes DuckDB to open every partition file on S3
 instead of only the matching ones (10-100x slower).
 
+Except after `h3_grid_disk`: ring cells can fall in another partition, so take each
+ring cell's h0 from `h3_cell_to_parent(cell, 0)` (H3 guide, *Distance Between Hexes*).
+
 ## 2. Start with a small geographic reference dataset
 <!-- prov: issue=#83,#87 models=unrecorded added=2026-08-12 cell=mask-before-aggregate tier=core -->
 
@@ -39,25 +42,16 @@ JOIN read_parquet('<STAC_CARBON_HEX_PATH>') c
 ```
 
 ### Scoping by name or feature id (no region mask)
-<!-- prov: issue=#163 models=unrecorded added=2026-06-07 cell=bosl-pri-eez-area tier=core -->
+<!-- prov: issue=#163,#563 models=gpt-oss,gemma added=2026-11-28 cell=bosl-pri-eez-area,glob-brazil-first-protected tier=core -->
 
-To filter a global `…/hex/h0=*/…` dataset by a name or `_cng_fid` and there is no region-mask hex to join, first restrict `h0` to the region, then apply the attribute filter:
-
-- **Known coordinates** (island centroids, a city, bbox corners): build the `h0` set with `h3_latlng_to_cell(lat, lng, 0)` per point and `UNNEST(h3_grid_disk(h0, 1))` to include neighbouring res-0 cells. For large or multi-part features, supply every known point or the bbox corners — one centroid can miss partitions the feature reaches.
-- **Known name only**: look the feature up in the dataset's GeoParquet asset (one row per feature) to read its centroid/bbox, convert to `h0`, then query the hex.
+To filter a global `…/hex/h0=*/…` dataset by a name or `_cng_fid` with no region-mask hex to join, filter on the dataset's own attribute. Never derive an `h0` set from typed coordinates or a hand-written list; when you want an `h0` prefilter, take it from the data with the same attribute filter.
 
 ```sql
-WITH h0s AS (
-  SELECT DISTINCT d
-  FROM (VALUES (19.282,166.647),(16.728,-169.534),(6.383,-162.417),
-               (0.807,-176.617),(-0.374,-159.997)) AS i(lat,lng),
-       UNNEST(h3_grid_disk(h3_latlng_to_cell(lat,lng,0),1)) AS t(d)
-)
 SELECT SUM(h3_cell_area(h8, 'km^2')) AS area_km2
 FROM (
   SELECT DISTINCT h8, h0
   FROM read_parquet('s3://<bucket>/<dataset>/hex/h0=*/data_00.parquet')
-  WHERE h0 IN (SELECT d FROM h0s) AND _cng_fid IN (201, 246, 243, 142, 90)
+  WHERE _cng_fid IN (201, 246, 243, 142, 90)
 );
 ```
 
@@ -138,40 +132,34 @@ Take the sentinel codes from the dataset's STAC description, and keep classes it
 names as real (water, open sea) unless the question excludes them. A `NaN` total or a
 total far smaller than expected is the signature of this trap.
 
-## 8. Total a partial-coverage feature by its own measure, not a hex count
-<!-- prov: issue=#289 models=claude-sonnet-5,glm-5.2,kimi-k3,qwen,qwen3-small added=2026-08-12 cell=acres-from-geoparquet-not-hex tier=core -->
+## 8. A single feature's own size comes from its measured column
+<!-- prov: issue=#289,#563 models=claude-sonnet-5,glm-5.2,kimi-k3,qwen,qwen3-small,deepseek-v4-flash added=2026-11-28 cell=acres-from-geoparquet-not-hex tier=core -->
 
-A vector feature's area or length is the value in its **own** column (`acres`,
-`length_km`), summed over `DISTINCT` feature id — tiling replicates that value on
-every cell the feature touches, so dedup by `_cng_fid` before summing.
-`COUNT(DISTINCT hN) * h3_cell_area(...)` also counts boundary cells the feature
-only partly fills, so when the feature has a measured column, take the magnitude
-from it and use the hex to *locate* the feature (mask, join, overlay). With no
-measured column, the hex area is the answer. For the conserved or overlaid **share** of that total, weight by
-the coverage fraction — area for polygons and rasters, length for lines — and keep
-the weight inside the same `SUM()` as the measure, not derived in a subquery the
-outer aggregate then ignores. (See the overlay rules in the H3 guide.)
+When the question asks for the size of named features themselves, take each
+feature's area or length from its **own** column (`acres`, `length_km`), summed over
+`DISTINCT _cng_fid` — tiling repeats that value on every cell. The area covered by
+several features or by a layer is the **distinct-cell union** (`h3_cell_area` over
+distinct cells, or `cover_frac` per H3 guide Problem 2), never a sum of an attribute
+area column, which double-counts overlaps. Take a ratio's numerator and denominator
+from the same cells: `SEMI JOIN` the numerator to the denominator's cells. For the conserved or overlaid **share**,
+weight by the coverage fraction — area for polygons and rasters, length for lines —
+inside the same `SUM()` as the measure. (See the overlay rules in the H3 guide.)
 
-## 9. Filtering no-data changes what you measured — say so
-<!-- prov: issue=#359 models=unrecorded added=2026-08-12 cell=instance-only:streamorder-use-nhdplus-hr-not-base-nhd tier=core -->
+## 9. When a no-data filter drops a material share of the data, say so
+<!-- prov: issue=#359,#563 models=deepseek-v4-flash added=2026-11-28 cell=instance-only:streamorder-use-nhdplus-hr-not-base-nhd tier=core -->
 
-`WHERE col IS NOT NULL` (or excluding sentinels) fixes the arithmetic but replaces
-the population. Missing values are rarely missing at random: incomplete columns are
-usually incomplete in patterns that track geography, feature type, or source
-vintage, so the rows that survive are a biased sample, and any share computed from
-them describes that sample, not the whole. Before using a partially-populated
-column as a filter, a class selector, or a denominator:
+*(Skip unless excluding NULLs or sentinels removes a material share of the rows or
+of the measure.)* The surviving rows are then rarely a random sample: incomplete
+columns track geography, feature type or source vintage. State the covered fraction
+alongside the number. If coverage is concentrated in part of the study area, say the
+breakdown is unavailable for the whole rather than giving a number with a caveat.
 
-1. **Quantify coverage** — what fraction of rows, and of the relevant measure
-   (area, length, count), survive the filter?
-2. **Check it against at least one independent grouping** — a partition key,
-   region, category, or date. Uniform coverage is safe to filter on; coverage that
-   is near 0% in some groups and near 100% in others means the filter is a group
-   selector wearing an attribute's clothes.
-3. **Confirm how absence is encoded.** `IS NOT NULL` misses sentinel values
-   (`0`, `-9999`, `''`); take them from the STAC description and exclude them before
-   measuring coverage — a sentinel can fake coverage a column does not have.
-4. **Report it.** If coverage is materially incomplete, state the covered fraction
-   and what it covers alongside the number. If coverage is concentrated in part of
-   the study area, the honest answer is that the breakdown is unavailable for the
-   whole — not a number with a caveat.
+## 10. One-line rules
+<!-- prov: issue=#563 models=qwen3.6-35b-a3b,inkling-2-mini,deepseek-nimbus,glm-5.3-flash,mimo-v2.6-flash,gpt-oss,gemma-small,gemma,qwen3-small added=2026-11-28 cell=orig-vents-near-ebsa,car-20-native-bird-hotspots,car-21-native-reptile-hotspots,glob-brazil-first-protected tier=core -->
+
+- Select by the dataset's own attribute and exclude the few codes that don't belong; never type long code lists or `h0` sets.
+- `h3_cell_to_parent(cell, res)` takes the target resolution (`h3_cell_to_parent(h10, 8)`), not a number of steps.
+- A cell has `7^(fine − coarse)` children at a finer resolution (49 from res 8 to res 10).
+- Between OGC:CRS84 and EPSG:4326 use `ST_SetCRS`, never `ST_Transform`: the coordinates are the same, and `ST_Transform` swaps the axes.
+- Top X% by value: cut at `quantile_cont(value, 1 - X/100)` over distinct cells.
+- Never cross-join two layers to compute distances; use `h3_grid_disk` (H3 guide, *Distance Between Hexes*).
