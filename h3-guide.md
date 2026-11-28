@@ -8,6 +8,22 @@ If you browse the catalog and only find a GeoParquet with no hex equivalent, **s
 
 **The native-resolution hex result is authoritative.** Do not re-verify it with other resolutions, attribute area columns or polygon geometry unless the user asks. (PAD-US res-10 hex area matched the vector union for Nevada within 0.1%.)
 
+## Percent of A that is B
+<!-- prov: issue=#563 models=qwen3.6-35b-a3b,gemma,gemma-small,gpt-oss,qwen3-small,nemotron-3.5-lightning added=2026-11-28 cell=car-31-ace-wetland-presence,tplca-ace-biorank5-in-wcb,car-26-gde,car-32-network-burned-decade,glob-gabon-forest-protected tier=core -->
+
+**Work at the native resolution of the finer layer** (its STAC says which; `h8`/`h9` columns on a res-10 asset are parent keys, not area units). Give each cell one fraction per layer (presence = 1; a `hex-weights` asset → `w1 + w2`; overlapping polygons such as WDPA → `MAX(cover_frac)`), then weight by cell area:
+
+```sql
+-- shown at res 10; use the finer layer's native column
+WITH a AS (SELECT h10, h0, MAX(<A frac or 1>) AS fa FROM read_parquet('<A hex>') WHERE <A filter> GROUP BY h10, h0),
+     b AS (SELECT h10, h0, MAX(<B frac or 1>) AS fb FROM read_parquet('<B hex>') WHERE <B filter> GROUP BY h10, h0)
+SELECT 100 * SUM(a.fa * COALESCE(b.fb, 0) * h3_cell_area(a.h10, 'km^2'))
+           / SUM(a.fa * h3_cell_area(a.h10, 'km^2')) AS pct_a_in_b
+FROM a LEFT JOIN b USING (h10, h0);
+```
+
+Never join a res-10 layer on its `h8` column, and never threshold a fraction (`= 0`, `> 0`): the share of A outside B uses `1 − fb`. If A is coarser than B (ACE is native res 8), use the land-children recipe under Problem 3, which is only for native res-8 or res-9 features.
+
 ## The H3 Data Model
 <!-- prov: issue=#92,#93,#549 models=unrecorded added=2026-04-21 cell=background tier=core -->
 
@@ -97,8 +113,8 @@ Units: `'km'`, `'m'`, or `'rads'`.
 
 **Within a distance ("near", "within N km of").** Expand each feature's cells with
 `h3_grid_disk`, keep the cells whose centers are within the distance, then join on
-the cell like any overlap. Neighbouring centers are `sqrt(3)` edge lengths apart,
-which sets the ring count:
+the cell like any overlap. A disk of k rings reaches only 1.5 × k edge lengths across
+its flat sides, so size k from 1.5 × edge, plus one ring:
 
 ```sql
 WITH pts AS (
@@ -106,7 +122,7 @@ WITH pts AS (
 ),
 ring AS (
   SELECT fid, h8 AS src, UNNEST(h3_grid_disk(h8,
-           CAST(ceil(<km> / (sqrt(3) * h3_get_hexagon_edge_length_avg(8, 'km'))) AS INTEGER))) AS h8
+           CAST(ceil(<km> / (1.5 * h3_get_hexagon_edge_length_avg(8, 'km'))) AS INTEGER) + 1)) AS h8
   FROM pts
 ),
 near AS (
@@ -125,20 +141,7 @@ dataset has one; the ring count grows with distance divided by edge length.
 ## Joining Different Resolutions
 <!-- prov: issue=#45,#312,#350,#563 models=claude-sonnet-5,glm-5.2,kimi-k3,qwen,gemma,gemma-small,gpt-oss,qwen3-small,nemotron-3.5-lightning added=2026-11-28 cell=h8-h9-join,h3-rollup-mean-not-max-res8,h3-rollup-mean-not-max-res9,car-31-ace-wetland-presence,tplca-ace-biorank5-in-wcb,tpl-almanac-co-wui-share tier=core -->
 
-**Join at the finest resolution both datasets carry.** When one side has only a coarser column, convert the finer side up to it — never look for child columns on the coarser dataset — and pick the reducer by what the value means:
-
-- a total per cell (carbon, population) → `SUM`; a per-cell attribute (elevation) → `AVG`;
-- **presence or coverage** (a 0/1 flag, a `frac`, a weight) → the **mean over the parent's children**, never `DISTINCT` parents, `MAX` or `EXISTS`. One child touching a parent does not make the parent covered.
-
-```sql
--- res-10 presence → covered share of each res-8 cell (7 children per resolution step: 49 here)
-SELECT h3_cell_to_parent(h10, 8) AS h8, h0, COUNT(DISTINCT h10) / 49.0 AS frac
-FROM read_parquet('<res-10 presence hex>')
-WHERE <presence filter>
-GROUP BY ALL
-```
-
-Weight `frac` by area as in *Feature coarser than the overlay layer* under Problem 3.
+**For shares and overlaps, use *Percent of A that is B* at the finer layer's native resolution.** Convert a finer layer up to a coarser column only to report a total (`SUM`) or a per-cell attribute (`AVG`) at that resolution, and never look for child columns on the coarser dataset.
 
 ### Step 1: Check for pre-computed parent columns (preferred)
 <!-- prov: issue=#45 models=unrecorded added=2026-04-06 cell=h8-h9-join tier=core -->
@@ -182,7 +185,7 @@ JOIN gfw ON h3_cell_to_parent(wdpa.h8, 6) = gfw.h6
 
 When one side lacks h0, omit it from that side. Prefer hex-partitioned variants (with h0) when available for partition pruning.
 
-Some datasets carry NULL in their finer pre-computed columns for very large features (e.g. IUCN species ranges fill `h8` only for small ranges; larger ranges stop at `h6` or `h5`). Use each feature's finest cell: join the rows that have `h8` on `h8`, the rows with NULL `h8` but a value in `h6` on `h3_cell_to_parent(other.h8, 6) = h6`, and so on down to the coarsest column. Joining every row on its coarsest column credits a whole parent cell to a feature that touches one child, and overcounts coverage. For a dataset that has only the coarse column, see *Feature coarser than the overlay layer* under Problem 3.
+Some datasets carry NULL in their finer pre-computed columns for very large features (e.g. IUCN species ranges fill `h8` only for small ranges; larger ranges stop at `h6` or `h5`). Use each feature's finest cell: join the rows that have `h8` on `h8`, the rows with NULL `h8` but a value in `h6` on `h3_cell_to_parent(other.h8, 6) = h6`, and so on down to the coarsest column. Joining every row on its coarsest column credits a whole parent cell to a feature that touches one child, and overcounts coverage. For a dataset whose native resolution is 8 or 9, see *Feature coarser than the overlay layer* under Problem 3.
 
 ## Subsetting a dataset to a region (state, county, district)
 <!-- prov: issue=#322,#324,#325,#528 models=qwen,nimbus added=2026-07-15 cell=h0-not-a-boundary,region-subset-finest-shared-res,mask-to-state-not-unit-set tier=core -->
@@ -337,9 +340,10 @@ ORDER BY pct_conserved;
 
 Asking about **one** class ("what percent of hardwood woodland is conserved") is the same query with `WHERE f.whr13num = <code>` — keep the `frac × weight × area` product. Joining to the *distinct conserved cells* instead (a `SEMI JOIN` on `(h10, h0)`) counts every partly-conserved cell as fully conserved and overstates the percentage.
 
-**Feature coarser than the overlay layer — read the weights asset at the feature's own resolution.** *(Skip unless the feature's native resolution is coarser than the layer you are overlaying — e.g. a res-8 or res-9 feature against a res-10 coverage layer.)* Weights assets are published per resolution (`…-hex-weights-res9`, `…-hex-weights-res8`) and the coarser ones are already averaged over the fine cells inside each parent, so no rollup is needed. Weight each coarse cell by its **land** area — `land_area_km2`, published on the region's land-grid rollup at the same resolution (California: `ca30x30-ecoregion`, assets `ecoregion-hex-res9` and `ecoregion-hex-res8`) — since coastal and border cells are only partly land. Join the land grid and `LEFT JOIN` the weights asset to it.
+**Feature coarser than the overlay layer — only for a feature whose native resolution is 8 or 9** (it has no `h10` column; e.g. ACE). A res-10 asset that also carries `h8` is native res 10: use *Percent of A that is B*. Weights assets are published per resolution (`…-hex-weights-res9`, `…-hex-weights-res8`) and the coarser ones are already averaged over the fine cells inside each parent, so no rollup is needed. Weight each coarse cell by its **land** area — `land_area_km2`, published on the region's land-grid rollup at the same resolution (California: `ca30x30-ecoregion`, assets `ecoregion-hex-res9` and `ecoregion-hex-res8`) — since coastal and border cells are only partly land. Join the land grid and `LEFT JOIN` the weights asset to it.
 
 ```sql
+-- only for a feature whose native resolution is 8 (no h10 column)
 WITH feat AS (
   SELECT DISTINCT h8, h0
   FROM read_parquet('<res-8 feature hex>')
@@ -359,6 +363,7 @@ When no weights asset is published at the coarse resolution — or the finer lay
 Averaging a res-10 presence flag over the land children of a res-8 feature — the ACE × wetlands case, no GAP column anywhere:
 
 ```sql
+-- only for a feature whose native resolution is 8 (no h10 column)
 WITH feat AS (          -- coarse (res-8) feature cells
   SELECT DISTINCT h8, h0
   FROM read_parquet('<res-8 feature hex>')
@@ -380,7 +385,7 @@ LEFT JOIN present p USING (h10, h0);
 
 Presence promoted straight to the res-8 cell (`does any child match`) overstates badly — worse for sparser features. The mean over land children is the fraction; the `DISTINCT h8,h0` feature cells and the `AVG` over their children make the answer independent of the join resolution.
 
-Group on `h3_cell_to_parent(h10, 8)` when the fine layer carries no `h8` column. At res 9 read `ecoregion-hex-res9` and the `…-hex-weights-res9` weights the same way. When the coarse feature is itself a `hex-fractions` layer, keep its `frac` in the product on both sides, as in the same-resolution case.
+Group on `h3_cell_to_parent(h10, 8)` when the fine layer carries no `h8` column. For a native res-9 feature, read `ecoregion-hex-res9` and the `…-hex-weights-res9` weights the same way. When the coarse feature is itself a `hex-fractions` layer, keep its `frac` in the product on both sides, as in the same-resolution case.
 
 **If you plan to mask this result against another hex dataset:** put the
 `SEMI JOIN` on the raw `read_parquet(...)` *before* `GROUP BY`, not in a

@@ -90,7 +90,7 @@ EXECUTABLE = {
     # [16] res-8 coarse-feature overlay weighted by land_area_km2 + (w1+w2) —
     #      the exact shape #364 shipped broken; binds land_area_km2 (ecoregion)
     #      and w1/w2 (weights) so a moved column fails here.
-    "h3-guide.md:40c748d887": {
+    "h3-guide.md:c9ee475b9c": {
         "<res-8 feature hex>": ECO8,
         "<feature filter>": "nland > 0",
         "<ecoregion hex-res8>": ECO8,
@@ -134,10 +134,10 @@ EXECUTABLE = {
     #   claim the function was broken. Binding this keeps the claim honest.
     # proximity via grid_disk (#522): trails stand in for any point/feature hex
     # with _cng_fid + h8; binds every function and column of the recipe.
-    "h3-guide.md:e011d791ba": {"<point hex>": TRAILS_HEX, "<area hex>": CD_HEX, "<km>": "5"},
+    "h3-guide.md:f0ca85f702": {"<point hex>": TRAILS_HEX, "<area hex>": CD_HEX, "<km>": "5"},
     # presence-only over res-10 land children (#355): mean of a 0/1 flag, never
     #   promoted to the res-8 parent. ACE feature x NWI wetlands, no GAP column.
-    "h3-guide.md:da766d501c": {
+    "h3-guide.md:5660b2ce2c": {
         "<res-8 feature hex>": ACE,
         "<feature filter>": "BioRankSW = 5",
         "<ecoregion hex>": ECO10,
@@ -148,11 +148,16 @@ EXECUTABLE = {
             "'Estuarine and Marine Wetland')"
         ),
     },
-    # headline coarse-join reducer (#563): res-10 presence averaged up to res 8.
-    #   NWI carries only h10, so this also binds the h3_cell_to_parent() form.
-    "h3-guide.md:93647e05fe": {
-        "<res-10 presence hex>": NWI,
-        "<presence filter>": "state_code = 'CA' AND WETLAND_TYPE = 'Freshwater Emergent Wetland'",
+    # canonical "percent of A that is B" (#563): one fraction per cell per layer at
+    #   the finer layer's native res, fa x fb x area. NWI presence (A, frac 1) in
+    #   ca30x30 GAP 1-2 weights (B), the car-31 shape.
+    "h3-guide.md:a3e793f0d9": {
+        "<A hex>": NWI,
+        "<A frac or 1>": "1",
+        "<A filter>": "state_code = 'CA' AND WETLAND_TYPE = 'Freshwater Emergent Wetland'",
+        "<B hex>": CW10,
+        "<B frac or 1>": "w1 + w2",
+        "<B filter>": "TRUE",
     },
     # parent-resolution join (#402): a fine dataset's pre-computed h6 column joined
     #   to a coarse dataset indexed at h6. Binds `elevation` on GEBCO and

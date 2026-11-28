@@ -13,6 +13,9 @@ where `hX` is the finest resolution shared by both datasets (h8, h9, etc. — ch
 schema). Omitting `AND t1.h0 = t2.h0` causes DuckDB to open every partition file on S3
 instead of only the matching ones (10-100x slower).
 
+Except after `h3_grid_disk`: ring cells can fall in another partition, so take each
+ring cell's h0 from `h3_cell_to_parent(cell, 0)` (H3 guide, *Distance Between Hexes*).
+
 ## 2. Start with a small geographic reference dataset
 <!-- prov: issue=#83,#87 models=unrecorded added=2026-08-12 cell=mask-before-aggregate tier=core -->
 
@@ -146,7 +149,8 @@ feature's area or length from its **own** column (`acres`, `length_km`), summed 
 `DISTINCT _cng_fid` — tiling repeats that value on every cell. The area covered by
 several features or by a layer is the **distinct-cell union** (`h3_cell_area` over
 distinct cells, or `cover_frac` per H3 guide Problem 2), never a sum of an attribute
-area column, which double-counts overlaps. For the conserved or overlaid **share**,
+area column, which double-counts overlaps. Take a ratio's numerator and denominator
+from the same cells: `SEMI JOIN` the numerator to the denominator's cells. For the conserved or overlaid **share**,
 weight by the coverage fraction — area for polygons and rasters, length for lines —
 inside the same `SUM()` as the measure. (See the overlay rules in the H3 guide.)
 
