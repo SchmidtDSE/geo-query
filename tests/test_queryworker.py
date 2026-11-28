@@ -18,7 +18,7 @@ from queryworker import (
     isolated_db,
     render_result,
 )
-from querytime import TIME_LIMIT_MESSAGE
+from queryworker import TIME_LIMIT_MESSAGE
 
 # Runs for minutes unless something stops it, and never spills.
 SLOW_SQL = "SELECT sum(hash(i)) AS s FROM range(1000000000000::BIGINT) t(i)"

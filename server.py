@@ -1,6 +1,5 @@
 from auth import CALLER, caller_label, load_tokens, match_token
-from spillguard import read_memory as _read_memory, instance_memory as _instance_memory
-from spillguard import GUARD as SPILL_GUARD, BUSY_MESSAGE as SPILL_BUSY_MESSAGE, INTERRUPTED_MESSAGE as SPILL_INTERRUPTED_MESSAGE, INTERRUPTED_MESSAGES as SPILL_INTERRUPTED_MESSAGES
+from memstat import read_memory as _read_memory, instance_memory as _instance_memory
 import os
 import re
 import socket
@@ -250,10 +249,9 @@ TOOL_INJECTED_CONTEXT = f"""
 # 4. ISOLATION ENGINE
 # -------------------------------------------------------------------------
 from s3config import rewrite_sql_hrefs
-from querytime import QueryClock, TIME_LIMIT_MESSAGE
 # Connection setup and rendering live in queryworker, shared with the worker
 # processes (#551). redact_credentials is re-exported for callers of this module.
-from queryworker import WarmWorker, error_text, isolated_db, redact_credentials, render_result  # noqa: F401
+from queryworker import TIME_LIMIT_MESSAGE, WarmWorker, error_text, isolated_db, redact_credentials, render_result  # noqa: F401
 from dbconfig import (
     duckdb_max_temp_directory_size,
     duckdb_memory_limit,
@@ -279,8 +277,7 @@ if _TEMP_CAP:
 def get_isolated_db(s3_key: str = None, s3_secret: str = None, s3_endpoint: str = None, s3_scope: str = None, s3_region: str = None, s3_url_style: str = None):
     """A fresh, locked-down connection for one in-process query (queryworker.py
     holds the setup, shared with the worker processes of #551)."""
-    with isolated_db(SETUP_SQL, EXTRA_EXTENSIONS, register=SPILL_GUARD.register,
-                     unregister=SPILL_GUARD.unregister, s3_key=s3_key, s3_secret=s3_secret,
+    with isolated_db(SETUP_SQL, EXTRA_EXTENSIONS, s3_key=s3_key, s3_secret=s3_secret,
                      s3_endpoint=s3_endpoint, s3_scope=s3_scope, s3_region=s3_region,
                      s3_url_style=s3_url_style) as conn:
         yield conn
@@ -311,10 +308,6 @@ def query(sql_query: str, s3_key: str = None, s3_secret: str = None, s3_endpoint
     # proxy injected for this query. The secrets belong to the deployment.
     if SECRET_FUNCTIONS.search(sql_query):
         return "SQL Error: duckdb_secrets() and which_secret() are not available here: the S3 secrets belong to the deployment."
-    # Spill disk or memory is short on this replica (#428): run nothing, so the
-    # retry lands on another replica while /readyz takes this one out of the Service.
-    if SPILL_GUARD.under_pressure():
-        return SPILL_BUSY_MESSAGE
     # One worker process per query (#551): it is killed at the time limit or
     # when the client goes, and its memory returns to the OS when it exits.
     if QUERY_WORKER is not None:
@@ -323,27 +316,13 @@ def query(sql_query: str, s3_key: str = None, s3_secret: str = None, s3_endpoint
             {"s3_key": s3_key, "s3_secret": s3_secret, "s3_endpoint": s3_endpoint,
              "s3_scope": s3_scope, "s3_region": s3_region, "s3_url_style": s3_url_style},
             time_limit=query_time_limit(), stop=stop, caller=CALLER.get())
-    spill_dir = None
-    clock = None
+    # No worker: this module was imported (tests, tools) rather than run as the
+    # server, which always starts one. Run the same code in-process, unlimited.
     try:
         with get_isolated_db(s3_key=s3_key, s3_secret=s3_secret, s3_endpoint=s3_endpoint, s3_scope=s3_scope, s3_region=s3_region, s3_url_style=s3_url_style) as db:
-            spill_dir = db.sql("SELECT current_setting('temp_directory')").fetchall()[0][0]
-            limit = query_time_limit()
-            if limit:
-                clock = QueryClock(db, sql_query, limit, caller=CALLER.get())
             return render_result(db.sql(sql_query), (s3_key, s3_secret))
-
     except Exception as e:
-        if isinstance(e, duckdb.InterruptException):
-            reason = SPILL_GUARD.was_interrupted(spill_dir)
-            if reason:
-                return SPILL_INTERRUPTED_MESSAGES.get(reason, SPILL_INTERRUPTED_MESSAGE)
-            if clock is not None and clock.expired.is_set():
-                return TIME_LIMIT_MESSAGE.format(limit=clock.limit)
         return error_text(e, (s3_key, s3_secret))
-    finally:
-        if clock is not None:
-            clock.stop()
 
 query.__doc__ = f"""
 Executes optimized DuckDB SQL against S3 parquet files.
@@ -367,18 +346,13 @@ WITHOUT s3_scope, your endpoint applies to EVERY s3:// path in the query and the
 # A CapacityLimiter bounds concurrent scans so a burst can't oversubscribe the
 # pod's CPU/memory or starve the hex tools sharing anyio's default thread pool.
 #
-# QUERY_WORKERS=1 runs each query in its own worker process (#551), one at a time:
-# a heavy query owns the pod, and other queries go to other replicas. When several
-# workers overlap and the pod runs out of memory, the kernel kills the biggest,
-# which is the heavy query this server exists to finish, so workers mean
-# concurrency 1. The spare worker is started at server start-up, not on import,
-# so tests and tools that import this module start no processes.
-QUERY_WORKERS = os.environ.get("QUERY_WORKERS", "").strip() == "1"
-_QUERY_CONCURRENCY = 1 if QUERY_WORKERS else int(os.environ.get("MCP_QUERY_CONCURRENCY", "8"))
-if QUERY_WORKERS and os.environ.get("MCP_QUERY_CONCURRENCY", "1").strip() != "1":
-    print("⚠️ MCP_QUERY_CONCURRENCY ignored: QUERY_WORKERS=1 runs one query at a time (#551)",
-          file=sys.stderr)
-_QUERY_LIMITER = anyio.CapacityLimiter(_QUERY_CONCURRENCY)
+# Each query runs in its own worker process (#551), one at a time: a heavy query
+# owns the pod, and other queries go to other replicas through the idle-routing
+# proxy. When several workers overlap and the pod runs out of memory, the kernel
+# kills the biggest, which is the heavy query this server exists to finish. The
+# spare worker is started at server start-up, not on import, so tests and tools
+# that import this module start no processes.
+_QUERY_LIMITER = anyio.CapacityLimiter(1)
 QUERY_WORKER: WarmWorker | None = None
 
 
@@ -419,8 +393,6 @@ async def _query_tool(
         outcome = "error" if result.startswith("SQL Error") else "ok"
         if result.startswith(TIME_LIMIT_MESSAGE[:40]):
             outcome = "time-limit"
-        if result in (SPILL_BUSY_MESSAGE, *SPILL_INTERRUPTED_MESSAGES.values(), SPILL_INTERRUPTED_MESSAGE):
-            outcome = "guard"
         # One line per query: server-side time and time spent waiting for a
         # slot, which clients cannot see apart from network time (#519).
         print(f"⏱️ Query done [{CALLER.get()}] {outcome} in {time.monotonic() - started:.1f}s "
@@ -1092,10 +1064,9 @@ class _BearerAuthMiddleware(BaseHTTPMiddleware):
 
 def _start_memory_log() -> None:
     """Log the pod's memory every MEMORY_LOG_INTERVAL seconds (default 300; 0
-    turns it off): the working set the guard and the OOM killer count, the
-    node's available memory, queries running, and what the shared tile
-    connection holds. It shows whether memory falls back after a heavy query
-    or stays with an idle pod (#519)."""
+    turns it off): the working set the OOM killer counts, the node's available
+    memory, queries running, and what the shared tile connection holds. It shows
+    whether memory falls back after a heavy query or stays with an idle pod (#519)."""
     try:
         interval = float(os.environ.get("MEMORY_LOG_INTERVAL", "300"))
     except ValueError:
@@ -1112,8 +1083,7 @@ def _start_memory_log() -> None:
                 gib = lambda b: "?" if b is None else f"{b / 2**30:.1f}"
                 print(f"📊 memory: pod {gib(s.pod_used)}/{gib(s.pod_limit)} GiB, node available "
                       f"{gib(s.node_available)} GiB, queries running {_QUERY_LIMITER.borrowed_tokens}, "
-                      f"tile connection {gib(tile)} GiB, guard "
-                      f"{SPILL_GUARD.pressure_reason() or 'clear'}", file=sys.stderr)
+                      f"tile connection {gib(tile)} GiB", file=sys.stderr)
             except Exception as e:  # logging must not die
                 print(f"⚠️ memory log failed: {type(e).__name__}: {e}", file=sys.stderr)
 
@@ -1130,12 +1100,9 @@ async def _healthz(_request):
 
 async def _readyz(_request):
     # Readiness, separate from liveness (#429). Like /healthz, async and
-    # I/O-free, so a starved event loop also fails it. Out of the Service while
-    # spill disk or memory is short (#428), so new queries go to other replicas
-    # instead of pushing this one into eviction or an OOM kill.
-    if SPILL_GUARD.under_pressure():
-        reason = SPILL_GUARD.pressure_reason() or "under pressure"
-        return JSONResponse({"ok": False, "reason": reason}, status_code=503)
+    # I/O-free, so a starved event loop also fails it. It no longer drains on
+    # memory or spill pressure: with one query per pod in its own worker (#551),
+    # there is nothing to protect by turning queries away.
     return JSONResponse({"ok": True, "version": APP_VERSION})
 
 
@@ -1190,14 +1157,12 @@ if __name__ == "__main__":
         print("🔓 Auth disabled (no MCP_AUTH_TOKENS_DIR or MCP_AUTH_TOKEN)", file=sys.stderr)
     print(_describe_transport_security(_TRANSPORT_SECURITY), file=sys.stderr)
 
-    if QUERY_WORKERS:
-        QUERY_WORKER = WarmWorker(SETUP_SQL, EXTRA_EXTENSIONS)
-        QUERY_WORKER.start()
-        print("🧩 Query workers on: one query at a time, each in a fresh process (#551)",
-              file=sys.stderr)
+    QUERY_WORKER = WarmWorker(SETUP_SQL, EXTRA_EXTENSIONS)
+    QUERY_WORKER.start()
+    print("🧩 Query workers: one query at a time, each in a fresh process (#551)",
+          file=sys.stderr)
 
     print("🚀 Starting DuckDB MCP Server...", file=sys.stderr)
-    SPILL_GUARD.start()
     _start_memory_log()
     uvicorn.run(
         app,

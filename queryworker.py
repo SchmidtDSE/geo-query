@@ -19,7 +19,8 @@ Queries run one at a time, and one prepared worker waits for the next query
 so start-up stays off the request path. A heavy query gets the whole pod.
 
 The same module holds the connection setup and result rendering used by the
-in-process path (QUERY_WORKERS unset), so both paths run identical code.
+in-process path (the module imported without a running server, as in tests),
+so both paths run identical code.
 
 Run as a script, this file is the worker. It reads one JSON line of
 configuration from stdin, prepares a connection, writes a "ready" line, then
@@ -56,10 +57,13 @@ from s3config import (
     source_secret_sql,
     sql_quote as _sql_quote,
 )
-from querytime import TIME_LIMIT_MESSAGE
+# The model sees these when a worker is stopped.
+TIME_LIMIT_MESSAGE = (
+    "SQL Error: the query ran longer than this server's {limit:g}-second limit and was stopped. "
+    "Narrow it: filter early, include h0 in joins, aggregate the hex tables rather than raw "
+    "geometries, or scope the area."
+)
 
-# The model sees these when a worker is killed. The first matches the memory
-# guard's message, so models see the same text whichever path stopped a query.
 MEMORY_KILLED_MESSAGE = (
     "Query stopped: it used too much memory on this server and was interrupted so "
     "the server could keep running. Make the query hold less data at once, for "
@@ -232,22 +236,16 @@ def finish_connection(conn, s3_key: str = None, s3_secret: str = None, s3_endpoi
 
 
 @contextmanager
-def isolated_db(setup_sql: str, extra_extensions=(), register=None, unregister=None,
+def isolated_db(setup_sql: str, extra_extensions=(),
                 s3_key: str = None, s3_secret: str = None, s3_endpoint: str = None,
                 s3_scope: str = None, s3_region: str = None, s3_url_style: str = None):
-    """A fresh, locked-down connection for one query, closed afterwards.
-    `register`/`unregister` let the in-process path report it to the memory guard."""
+    """A fresh, locked-down connection for one query, closed afterwards."""
     check_credential_pair(s3_key, s3_secret)
     conn = prepare_connection(setup_sql, extra_extensions)
     try:
         finish_connection(conn, s3_key=s3_key, s3_secret=s3_secret, s3_endpoint=s3_endpoint,
                           s3_scope=s3_scope, s3_region=s3_region, s3_url_style=s3_url_style)
-        spill_dir = register(conn) if register else None
-        try:
-            yield conn
-        finally:
-            if unregister:
-                unregister(spill_dir)
+        yield conn
     finally:
         conn.close()
 

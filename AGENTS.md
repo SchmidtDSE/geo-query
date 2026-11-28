@@ -95,8 +95,8 @@ glen-benchmark flights.
   threads by query concurrency: that makes the common heavy query spill or slow
   down for parallel queries that seldom happen. An even split was tried and
   dropped in #520.
-- **One query at a time per replica.** With `QUERY_WORKERS=1` (#551) the server
-  enforces it: each query runs in a fresh worker process, and one prepared
+- **One query at a time per replica.** The server enforces it (#551): each
+  query runs in a fresh worker process, and one prepared
   worker waits for the next query, so start-up is not paid per query. Overlap
   is what this avoids. When overlapping queries run a pod out of memory, the
   kernel kills the biggest process, which is the heavy query.
@@ -114,10 +114,9 @@ glen-benchmark flights.
   `k8s/proxy.yaml` (prod) and `k8s/schmidtdse-proxy.yaml`. Each public Service
   selects its proxy, and the proxy finds the MCP pods through a headless
   Service. geo-workflows runs a single replica with no proxy.
-- Workers run on dev, prod and schmidtdse (v0.11.0). geo-workflows and bench
-  (v0.10.0) do not, so the memory guard (`spillguard.py`, #428) still drains
-  those pods and interrupts queries before the cgroup OOM. #551 removes it once
-  every deployment runs workers.
+- Workers are the only query path; the memory guard is gone (#551). Releases
+  before it needed `QUERY_WORKERS=1` to turn workers on, so the manifests keep
+  that env until every deployment runs a release without the guard.
 - For benchmark load, add replicas for the flight. Scaling back afterwards is
   optional: an idle pod requests only 2Gi and 250m, which NRP never checks.
   Never shrink per-query resources to fit more queries on a pod.
