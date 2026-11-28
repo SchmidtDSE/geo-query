@@ -138,40 +138,23 @@ Take the sentinel codes from the dataset's STAC description, and keep classes it
 names as real (water, open sea) unless the question excludes them. A `NaN` total or a
 total far smaller than expected is the signature of this trap.
 
-## 8. Total a partial-coverage feature by its own measure, not a hex count
-<!-- prov: issue=#289 models=claude-sonnet-5,glm-5.2,kimi-k3,qwen,qwen3-small added=2026-08-12 cell=acres-from-geoparquet-not-hex tier=core -->
+## 8. A single feature's own size comes from its measured column
+<!-- prov: issue=#289,#563 models=claude-sonnet-5,glm-5.2,kimi-k3,qwen,qwen3-small,deepseek-v4-flash added=2026-11-28 cell=acres-from-geoparquet-not-hex tier=core -->
 
-A vector feature's area or length is the value in its **own** column (`acres`,
-`length_km`), summed over `DISTINCT` feature id — tiling replicates that value on
-every cell the feature touches, so dedup by `_cng_fid` before summing.
-`COUNT(DISTINCT hN) * h3_cell_area(...)` also counts boundary cells the feature
-only partly fills, so when the feature has a measured column, take the magnitude
-from it and use the hex to *locate* the feature (mask, join, overlay). With no
-measured column, the hex area is the answer. For the conserved or overlaid **share** of that total, weight by
-the coverage fraction — area for polygons and rasters, length for lines — and keep
-the weight inside the same `SUM()` as the measure, not derived in a subquery the
-outer aggregate then ignores. (See the overlay rules in the H3 guide.)
+When the question asks for the size of named features themselves, take each
+feature's area or length from its **own** column (`acres`, `length_km`), summed over
+`DISTINCT _cng_fid` — tiling repeats that value on every cell. The area covered by
+several features or by a layer is the **distinct-cell union** (`h3_cell_area` over
+distinct cells, or `cover_frac` per H3 guide Problem 2), never a sum of an attribute
+area column, which double-counts overlaps. For the conserved or overlaid **share**,
+weight by the coverage fraction — area for polygons and rasters, length for lines —
+inside the same `SUM()` as the measure. (See the overlay rules in the H3 guide.)
 
-## 9. Filtering no-data changes what you measured — say so
-<!-- prov: issue=#359 models=unrecorded added=2026-08-12 cell=instance-only:streamorder-use-nhdplus-hr-not-base-nhd tier=core -->
+## 9. When a no-data filter drops a material share of the data, say so
+<!-- prov: issue=#359,#563 models=deepseek-v4-flash added=2026-11-28 cell=instance-only:streamorder-use-nhdplus-hr-not-base-nhd tier=core -->
 
-`WHERE col IS NOT NULL` (or excluding sentinels) fixes the arithmetic but replaces
-the population. Missing values are rarely missing at random: incomplete columns are
-usually incomplete in patterns that track geography, feature type, or source
-vintage, so the rows that survive are a biased sample, and any share computed from
-them describes that sample, not the whole. Before using a partially-populated
-column as a filter, a class selector, or a denominator:
-
-1. **Quantify coverage** — what fraction of rows, and of the relevant measure
-   (area, length, count), survive the filter?
-2. **Check it against at least one independent grouping** — a partition key,
-   region, category, or date. Uniform coverage is safe to filter on; coverage that
-   is near 0% in some groups and near 100% in others means the filter is a group
-   selector wearing an attribute's clothes.
-3. **Confirm how absence is encoded.** `IS NOT NULL` misses sentinel values
-   (`0`, `-9999`, `''`); take them from the STAC description and exclude them before
-   measuring coverage — a sentinel can fake coverage a column does not have.
-4. **Report it.** If coverage is materially incomplete, state the covered fraction
-   and what it covers alongside the number. If coverage is concentrated in part of
-   the study area, the honest answer is that the breakdown is unavailable for the
-   whole — not a number with a caveat.
+*(Skip unless excluding NULLs or sentinels removes a material share of the rows or
+of the measure.)* The surviving rows are then rarely a random sample: incomplete
+columns track geography, feature type or source vintage. State the covered fraction
+alongside the number. If coverage is concentrated in part of the study area, say the
+breakdown is unavailable for the whole rather than giving a number with a caveat.

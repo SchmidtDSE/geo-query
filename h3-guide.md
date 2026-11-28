@@ -6,7 +6,7 @@ When a dataset's STAC metadata lists a GeoParquet file and a `/hex/` asset, the 
 
 If you browse the catalog and only find a GeoParquet with no hex equivalent, **say so** rather than falling back to spatial predicates. A missing hex version is a data pipeline gap (not something to work around silently).
 
-The hex answer at the dataset's native resolution is the answer (PAD-US res-10 hex area matched the vector union for Nevada within 0.1%). Do not re-run it at other resolutions or cross-check it against polygons.
+**The native-resolution hex result is authoritative.** Do not re-verify it with other resolutions, attribute area columns or polygon geometry unless the user asks. (PAD-US res-10 hex area matched the vector union for Nevada within 0.1%.)
 
 ## The H3 Data Model
 <!-- prov: issue=#92,#93,#549 models=unrecorded added=2026-04-21 cell=background tier=core -->
@@ -38,14 +38,9 @@ All spatial operations are hex joins — two datasets overlap wherever their hex
 - **Never SUM a feature's area or length column over hex rows** (ACRES, GIS_Acres, area_ha, `length_*`): the source feature's total repeats on every cell it covers, so `SUM(ACRES)` is wrong by 10³–10⁶×. For a feature's own total, sum the column over `DISTINCT _cng_fid` (optimization rule 8). For the area covered by overlapping features, count each cell once: weight it by `cover_frac` where the dataset has one (Problem 2), otherwise count distinct cells × cell area.
 
 ## Area Conversion
-<!-- prov: issue=#163,#259,#288 models=gemma,qwen3,qwen3-small added=2026-07-07 cell=units-acres,cell-count-units,carbon-cell-is-total tier=core -->
+<!-- prov: issue=#163,#259,#288,#563 models=gemma,qwen3,qwen3-small,deepseek-v4-flash added=2026-11-28 cell=units-acres,cell-count-units,carbon-cell-is-total tier=core -->
 
-H3 cells are not equal-area — true area varies with latitude and icosahedral distortion (res-8 cells span ~0.55–0.82 km²). Pick the method by scope:
-
-- **Scoped to a region, feature, or group** (a `WHERE`/mask bounds it to roughly ≤ a few million cells) — the common case, and the accuracy-critical one: sum exact `h3_cell_area()` over distinct cells.
-- **Unscoped global coverage** (millions of cells, no region filter): multiply an approximate count by the rough per-cell constant.
-
-For a region or feature area, and for per-group breakdowns, sum `h3_cell_area()` over distinct cells (exact at any resolution):
+Area is `SUM(h3_cell_area(hN, 'km^2'))` over distinct cells, which is exact at any resolution:
 
 ```sql
 -- Region / feature area:
@@ -67,26 +62,7 @@ SELECT SUM(h3_cell_area(h8, 'km^2')) * 247.105 AS area_acres
 FROM (SELECT DISTINCT h8, h0 FROM read_parquet('<hex>') WHERE <scope>);
 ```
 
-The `acres/cell (rough)` column in the table below already includes this factor, so a count × constant path needs no conversion.
-
-For unscoped global aggregates over millions of cells, multiplying an approximate count by the rough per-cell constant is faster (within ~1–2%). Exact area would force materializing every distinct cell, defeating the approximate path:
-
-```sql
-SELECT APPROX_COUNT_DISTINCT(h8) * 0.7373 AS area_km2 FROM ...
-```
-
-The constants below are latitude/distortion-averaged, not true per-cell values (res-8 cells range ~0.55–0.82 km²):
-
-| Resolution | km²/cell (rough) | acres/cell (rough) |
-|---|---|---|
-| h5 | 252.9 | 62,502 |
-| h6 | 36.13 | 8,929 |
-| h7 | 5.161 | 1,275 |
-| h8 | 0.7373 | 182.2 |
-| h9 | 0.1053 | 26.02 |
-| h10 | 0.01505 | 3.718 |
-
-Use the constant for the dataset's **native** resolution — the column it is actually indexed on (check with `DESCRIBE`). Multiplying a cell count by the constant for a different resolution is off by ~7× per level.
+Footnote, unscoped global totals only (millions of cells, no region filter): `APPROX_COUNT_DISTINCT(h8) * h3_get_hexagon_area_avg(8, 'km^2')` is faster, with the resolution argument matching the column.
 
 ## Coordinates from H3 Cells
 <!-- prov: issue=#104,#114 models=qwen3 added=2026-05-03 cell=bosl-nearest-fishing-jarvis tier=core -->
