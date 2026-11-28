@@ -1,10 +1,12 @@
 # H3 Geospatial Indexing
-<!-- prov: issue=#49,#522,#528 models=minimax-m2,deepseek-v4-flash,mimo-v2.6-flash,glm-5.3-flash added=2026-11-20 cell=bosl-coral-notake-share,orig-ecoregions-17pct tier=core -->
+<!-- prov: issue=#49,#522,#528,#563 models=minimax-m2,deepseek-v4-flash,mimo-v2.6-flash,glm-5.3-flash,glm-5 added=2026-11-28 cell=bosl-coral-notake-share,orig-ecoregions-17pct,car-26 tier=core -->
 
 **Always use H3 hex datasets for filtering and joining — never spatial predicates on GeoParquet.**
 When a dataset's STAC metadata lists a GeoParquet file and a `/hex/` asset, the GeoParquet is for feature attributes (names, ids, measured columns); every spatial step (overlap, containment, coverage share, area, distance) uses the `/hex/` asset. Never use `ST_Within`, `ST_Intersects`, `ST_Contains`, or similar predicates to filter or join large datasets — on these global files they run for hours, cannot be stopped, and a fast test on a few rows does not predict the full query. (Only exception: clipping line mileage to an AOI boundary — see Problem 4. It never applies to polygons, areas or distances.)
 
 If you browse the catalog and only find a GeoParquet with no hex equivalent, **say so** rather than falling back to spatial predicates. A missing hex version is a data pipeline gap (not something to work around silently).
+
+The hex answer at the dataset's native resolution is the answer (PAD-US res-10 hex area matched the vector union for Nevada within 0.1%). Do not re-run it at other resolutions or cross-check it against polygons.
 
 ## The H3 Data Model
 <!-- prov: issue=#92,#93,#549 models=unrecorded added=2026-04-21 cell=background tier=core -->
@@ -145,11 +147,22 @@ For distances over ~50 km, run the same query on a coarser column (`h6`) if the
 dataset has one; the ring count grows with distance divided by edge length.
 
 ## Joining Different Resolutions
-<!-- prov: issue=#45,#312,#350 models=claude-sonnet-5,glm-5.2,kimi-k3,qwen added=2026-08-03 cell=h8-h9-join,h3-rollup-mean-not-max-res8,h3-rollup-mean-not-max-res9 tier=core -->
+<!-- prov: issue=#45,#312,#350,#563 models=claude-sonnet-5,glm-5.2,kimi-k3,qwen,gemma,gemma-small,gpt-oss,qwen3-small,nemotron-3.5-lightning added=2026-11-28 cell=h8-h9-join,h3-rollup-mean-not-max-res8,h3-rollup-mean-not-max-res9,car-31-ace-wetland-presence,tplca-ace-biorank5-in-wcb,tpl-almanac-co-wui-share tier=core -->
 
-**Always join by converting the finer (higher-numbered) dataset to the coarser resolution — never look for child columns on the coarser dataset.**
+**Join at the finest resolution both datasets carry.** When one side has only a coarser column, convert the finer side up to it — never look for child columns on the coarser dataset — and pick the reducer by what the value means:
 
-Pick the reducer for that conversion by what the value means: a measured quantity per cell rolls up with `SUM` or `AVG`, but a **coverage fraction** (the share of a cell covered by something) rolls up as the mean over the parent's child cells — see *Feature coarser than the overlay layer* under Problem 3.
+- a total per cell (carbon, population) → `SUM`; a per-cell attribute (elevation) → `AVG`;
+- **presence or coverage** (a 0/1 flag, a `frac`, a weight) → the **mean over the parent's children**, never `DISTINCT` parents, `MAX` or `EXISTS`. One child touching a parent does not make the parent covered.
+
+```sql
+-- res-10 presence → covered share of each res-8 cell (7 children per resolution step: 49 here)
+SELECT h3_cell_to_parent(h10, 8) AS h8, h0, COUNT(DISTINCT h10) / 49.0 AS frac
+FROM read_parquet('<res-10 presence hex>')
+WHERE <presence filter>
+GROUP BY ALL
+```
+
+Weight `frac` by area as in *Feature coarser than the overlay layer* under Problem 3.
 
 ### Step 1: Check for pre-computed parent columns (preferred)
 <!-- prov: issue=#45 models=unrecorded added=2026-04-06 cell=h8-h9-join tier=core -->
@@ -328,8 +341,6 @@ GROUP BY class;
 - **presence-only layer, no fraction column → the presence flag, averaged over the finer layer's cells:** presence at the finer resolution *is* the fraction.
 
 Two invariants make each branch correct. **Multiply the coverage fractions on both sides** — a cell that is 40% habitat and 30% conserved contributes 0.4 × 0.3, never all-or-nothing — and **carry the weight through both numerator and denominator** (it looks like `h3_cell_area` divides out; it does not, because cells differ in area). The overlay layer's per-cell fraction comes from a companion **`…-hex-weights` asset** when one exists — `get_schema` names it (ca30x30 conserved-areas publishes it at res 10, `w1`–`w4` = the cell's share in GAP status 1–4); otherwise it is the layer's own `frac`. A weights asset covers only its own footprint, so `LEFT JOIN` it and `COALESCE(…, 0)`, and bound the result with a dense **land grid** for the region (California: `ca30x30-ecoregion`) or the denominator picks up cells outside it.
-
-Self-check, needs no gold: **if the coarsening is right, the answer does not change with the resolution you joined at.**
 
 At the same resolution — feature and overlay both at res 10 — the area weight is `h3_cell_area` and the land grid bounds the denominator:
 
