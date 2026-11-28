@@ -847,6 +847,20 @@ class TestTileRouteMounted:
         assert via_alias == via_canonical
         assert "SQL Error" not in via_alias
 
+    def test_query_tool_accepts_null_optional_args(self):
+        """Explicit nulls, and the strings "None"/"null"/"", for optional args are
+        treated as omitted: gpt-oss sends nulls on every call and was rejected by
+        schema validation 39 times in the #563 studies."""
+        from server import mcp
+        import anyio
+        for absent in (None, "None", "null", ""):
+            args = {"sql_query": "SELECT 1 AS one", "s3_endpoint": absent, "s3_scope": absent,
+                    "s3_region": absent, "s3_url_style": absent, "sql": absent}
+            out = anyio.run(lambda: mcp.call_tool("query", args))
+            text = str(out)
+            assert "SQL Error" not in text and "validation error" not in text.lower(), (absent, text)
+            assert "one" in text, (absent, text)
+
     def test_query_tool_missing_sql_errors_clearly(self):
         """Neither name supplied → a clear error, not an unhandled TypeError."""
         import anyio, server

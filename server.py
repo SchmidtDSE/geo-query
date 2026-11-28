@@ -382,20 +382,31 @@ _QUERY_LIMITER = anyio.CapacityLimiter(_QUERY_CONCURRENCY)
 QUERY_WORKER: WarmWorker | None = None
 
 
+def _absent(value: str | None) -> str | None:
+    """Treat null and the strings models write for it ("", "None", "null") as an
+    omitted argument. gpt-oss sends explicit nulls for every optional argument,
+    and others send the text "None"; rejecting either costs a turn (#563)."""
+    if value is None or value.strip().lower() in ("", "none", "null"):
+        return None
+    return value
+
+
 async def _query_tool(
-    sql_query: str = None,
-    s3_key: str = None,
-    s3_secret: str = None,
-    s3_endpoint: str = None,
-    s3_scope: str = None,
-    s3_region: str = None,
-    s3_url_style: str = None,
-    sql: str = None,
+    sql_query: str | None = None,
+    s3_key: str | None = None,
+    s3_secret: str | None = None,
+    s3_endpoint: str | None = None,
+    s3_scope: str | None = None,
+    s3_region: str | None = None,
+    s3_url_style: str | None = None,
+    sql: str | None = None,
 ) -> str:
+    s3_key, s3_secret, s3_endpoint, s3_scope, s3_region, s3_url_style = (
+        _absent(v) for v in (s3_key, s3_secret, s3_endpoint, s3_scope, s3_region, s3_url_style))
     # Accept `sql` as an alias for `sql_query`. register_hex_tiles's required param
     # is `sql`, so in a hex workflow models reuse that name here and eat an
     # avoidable rejection+retry (#321). Whichever name arrives, run the query.
-    sql_query = sql_query or sql
+    sql_query = _absent(sql_query) or _absent(sql)
     if not sql_query:
         return "SQL Error: no query provided — pass the SQL as `sql_query` (the alias `sql` is also accepted)."
     enqueued = time.monotonic()
