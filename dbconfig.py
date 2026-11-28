@@ -30,10 +30,10 @@ _MEMORY_LIMIT_FRACTION = 0.8
 # an OOM kill for an eviction with the same blast radius (#423).
 #
 # The cap is per instance, and DuckDB's count runs ~30% under the bytes on disk,
-# so it is a backstop: 0.7 is ~91% of the limit on disk. The pod-wide total is
-# spillguard's job (#428), which drains the replica and interrupts the largest
-# spill before the kubelet would evict it, so one query alone can use most of the
-# pod's space.
+# so it is a backstop: 0.7 is ~91% of the limit on disk. A pod runs one query at
+# a time (#551), so one query alone can use most of the pod's space. A hex tile
+# build spilling heavily at the same moment could push the pod past its limit;
+# nothing guards that overlap now that the spill guard (#428) is gone.
 _TEMP_DIRECTORY_FRACTION = 0.7
 
 # SI (10^3) and binary (2^10) byte units, plus the k8s "Ki/Mi/Gi/Ti" quantities.
@@ -88,8 +88,7 @@ def duckdb_memory_limit() -> str | None:
     - else POD_MEMORY_LIMIT (wire the pod's cgroup limit in via the Downward API —
       resourceFieldRef limits.memory): ~80% of it, for every connection. One heavy
       query may use the whole budget: heavy single queries come before parallel
-      work. Several heavy queries together can exceed it, and the memory guard
-      (spillguard, #428) drains and interrupts before the cgroup OOM.
+      work. A pod runs one query at a time, in its own worker process (#551).
     - else None. In a plain local run DuckDB sizes itself from detected RAM, which
       is only unsafe under a container cgroup — where detection can read the node's
       RAM, not the pod's, and DuckDB allocates past the limit and gets OOM-killed

@@ -123,8 +123,7 @@ class TestMaxTempDirectorySize:
         assert duckdb_max_temp_directory_size() == "10GiB"
 
     def test_pod_limit_is_seventy_percent_in_mib(self, monkeypatch):
-        # The NRP namespace default: 50Gi → 35 GiB per connection, a backstop
-        # under spillguard's pod-wide limit (#428).
+        # The NRP namespace default: 50Gi → 35 GiB per connection.
         monkeypatch.setenv("POD_EPHEMERAL_LIMIT", str(50 * 2**30))
         assert duckdb_max_temp_directory_size() == f"{35 * 1024}MiB"
 
